@@ -69,8 +69,9 @@ import okio.Path.Companion.toPath
  *
  *  * Segments are always non-empty.
  *  * If the segment is `.`, then the full path must be `.`.
- *  * If the segment is `..`, then the the path must be relative. All `..` segments precede all
- *    other segments.
+ *  * For normalized paths, if the segment is `..`, then the path must be relative. All `..`
+ *    segments precede all other segments. In all cases, a segment `..` cannot be the first segment
+ *    of an absolute path.
  *
  * The only path that ends with `/` is the file system root, `/`. The dot path `.` is a relative
  * path that resolves to whichever path it is resolved against.
@@ -117,29 +118,46 @@ import okio.Path.Companion.toPath
  * ------------
  *
  * <table>
- * <tr><th> Path                         <th> Parent             <th> Name          <th> Notes                          </tr>
- * <tr><td> `/`                          <td> null               <td> (empty)       <td> root                           </tr>
- * <tr><td> `/home/jesse/notes.txt`      <td> `/home/jesse`      <td> `notes.txt`   <td> absolute path                  </tr>
- * <tr><td> `project/notes.txt`          <td> `project`          <td> `notes.txt`   <td> relative path                  </tr>
- * <tr><td> `../../project/notes.txt`    <td> `../../project`    <td> `notes.txt`   <td> relative path with traversal   </tr>
- * <tr><td> `../../..`                   <td> null               <td> `..`          <td> relative path with traversal   </tr>
- * <tr><td> `.`                          <td> null               <td> `.`           <td> current working directory      </tr>
- * <tr><td> `C:\`                        <td> null               <td> (empty)       <td> volume root (Windows)          </tr>
- * <tr><td> `C:\Windows\notepad.exe`     <td> `C:\Windows`       <td> `notepad.exe` <td> volume absolute path (Windows) </tr>
- * <tr><td> `\`                          <td> null               <td> (empty)       <td> absolute path (Windows)        </tr>
- * <tr><td> `\Windows\notepad.exe`       <td> `\Windows`         <td> `notepad.exe` <td> absolute path (Windows)        </tr>
- * <tr><td> `C:`                         <td> null               <td> (empty)       <td> volume-relative path (Windows) </tr>
- * <tr><td> `C:project\notes.txt`        <td> `C:project`        <td> `notes.txt`   <td> volume-relative path (Windows) </tr>
- * <tr><td> `\\server`                   <td> null               <td> `server`      <td> UNC server (Windows)           </tr>
- * <tr><td> `\\server\project\notes.txt` <td> `\\server\project` <td> `notes.txt`   <td> UNC absolute path (Windows)    </tr>
+ * <tr><th> Path                         <th> Parent             <th> Root       <th> Name          <th> Notes                          </tr>
+ * <tr><td> `/`                          <td> null               <td> `/`        <td> (empty)       <td> root                           </tr>
+ * <tr><td> `/home/jesse/notes.txt`      <td> `/home/jesse`      <td> `/`        <td> `notes.txt`   <td> absolute path                  </tr>
+ * <tr><td> `project/notes.txt`          <td> `project`          <td> null       <td> `notes.txt`   <td> relative path                  </tr>
+ * <tr><td> `../../project/notes.txt`    <td> `../../project`    <td> null       <td> `notes.txt`   <td> relative path with traversal   </tr>
+ * <tr><td> `../../..`                   <td> null               <td> null       <td> `..`          <td> relative path with traversal   </tr>
+ * <tr><td> `.`                          <td> null               <td> null       <td> `.`           <td> current working directory      </tr>
+ * <tr><td> `C:\`                        <td> null               <td> `C:\`      <td> (empty)       <td> volume root (Windows)          </tr>
+ * <tr><td> `C:\Windows\notepad.exe`     <td> `C:\Windows`       <td> `C:\`      <td> `notepad.exe` <td> volume absolute path (Windows) </tr>
+ * <tr><td> `\`                          <td> null               <td> `\`        <td> (empty)       <td> absolute path (Windows)        </tr>
+ * <tr><td> `\Windows\notepad.exe`       <td> `\Windows`         <td> `\`        <td> `notepad.exe` <td> absolute path (Windows)        </tr>
+ * <tr><td> `C:`                         <td> null               <td> null       <td> (empty)       <td> volume-relative path (Windows) </tr>
+ * <tr><td> `C:project\notes.txt`        <td> `C:project`        <td> null       <td> `notes.txt`   <td> volume-relative path (Windows) </tr>
+ * <tr><td> `\\server`                   <td> null               <td> `\\server` <td> `server`      <td> UNC server (Windows)           </tr>
+ * <tr><td> `\\server\project\notes.txt` <td> `\\server\project` <td> `\\server` <td> `notes.txt`   <td> UNC absolute path (Windows)    </tr>
  * </table>
  */
-@ExperimentalFileSystem
 expect class Path internal constructor(bytes: ByteString) : Comparable<Path> {
+  /**
+   * This is the root path if this is an absolute path, or null if it is a relative path. UNIX paths
+   * have a single root, `/`. Each volume on Windows is its own root, like `C:\` and `D:\`. The
+   * path to the current volume `\` is its own root. Windows UNC paths like `\\server` are also
+   * roots.
+   */
+  val root: Path?
+
+  /**
+   * The components of this path that are usually delimited by slashes. If the root is not null it
+   * precedes these segments. If this path is a root its segments list is empty.
+   */
+  val segments: List<String>
+
+  val segmentsBytes: List<ByteString>
+
   internal val bytes: ByteString
 
+  /** This is true if [root] is not null. */
   val isAbsolute: Boolean
 
+  /** This is true if [root] is null. */
   val isRelative: Boolean
 
   /**
@@ -171,15 +189,12 @@ expect class Path internal constructor(bytes: ByteString) : Comparable<Path> {
    */
   val parent: Path?
 
-  /**
-   * Returns true if this is an absolute path with no parent. UNIX paths have a single root, `/`.
-   * Each volume on Windows is its own root, like `C:\` and `D:\`. Windows UNC paths like `\\server`
-   * are also roots.
-   */
+  /** Returns true if `this == this.root`. That is, this is an absolute path with no parent. */
   val isRoot: Boolean
 
   /**
-   * Returns a path that resolves [child] relative to this path.
+   * Returns a path that resolves [child] relative to this path. Note that the result isn't
+   * guaranteed to be normalized even if this and [child] are both normalized themselves.
    *
    * If [child] is an [absolute path][isAbsolute] or [has a volume letter][hasVolumeLetter] then
    * this function is equivalent to `child.toPath()`.
@@ -187,12 +202,78 @@ expect class Path internal constructor(bytes: ByteString) : Comparable<Path> {
   operator fun div(child: String): Path
 
   /**
-   * Returns a path that resolves [child] relative to this path.
+   * Returns a path that resolves [child] relative to this path. Note that the result isn't
+   * guaranteed to be normalized even if this and [child] are both normalized themselves.
+   *
+   * If [child] is an [absolute path][isAbsolute] or [has a volume letter][hasVolumeLetter] then
+   * this function is equivalent to `child.toPath()`.
+   */
+  operator fun div(child: ByteString): Path
+
+  /**
+   * Returns a path that resolves [child] relative to this path. Note that the result isn't
+   * guaranteed to be normalized even if this and [child] are both normalized themselves.
    *
    * If [child] is an [absolute path][isAbsolute] or [has a volume letter][hasVolumeLetter] then
    * this function is equivalent to `child.toPath()`.
    */
   operator fun div(child: Path): Path
+
+  /**
+   * Returns a path that resolves [child] relative to this path.
+   *
+   * Set [normalize] to true to eagerly consume `..` segments on the resolved path. In all cases,
+   * leading `..` on absolute paths will be removed. If [normalize] is false, note that the result
+   * isn't guaranteed to be normalized even if this and [child] are both normalized themselves.
+   *
+   * If [child] is an [absolute path][isAbsolute] or [has a volume letter][hasVolumeLetter] then
+   * this function is equivalent to `child.toPath(normalize)`.
+   */
+  fun resolve(child: String, normalize: Boolean = false): Path
+
+  /**
+   * Returns a path that resolves [child] relative to this path.
+   *
+   * Set [normalize] to true to eagerly consume `..` segments on the resolved path. In all cases,
+   * leading `..` on absolute paths will be removed. If [normalize] is false, note that the result
+   * isn't guaranteed to be normalized even if this and [child] are both normalized themselves.
+   *
+   * If [child] is an [absolute path][isAbsolute] or [has a volume letter][hasVolumeLetter] then
+   * this function is equivalent to `child.toPath(normalize)`.
+   */
+  fun resolve(child: ByteString, normalize: Boolean = false): Path
+
+  /**
+   * Returns a path that resolves [child] relative to this path.
+   *
+   * Set [normalize] to true to eagerly consume `..` segments on the resolved path. In all cases,
+   * leading `..` on absolute paths will be removed. If [normalize] is false, note that the result
+   * isn't guaranteed to be normalized even if this and [child] are both normalized themselves.
+   *
+   * If [child] is an [absolute path][isAbsolute] or [has a volume letter][hasVolumeLetter] then
+   * this function is equivalent to `child.toPath(normalize)`.
+   */
+  fun resolve(child: Path, normalize: Boolean = false): Path
+
+  /**
+   * Returns this path relative to [other]. This effectively inverts the resolve operator, `/`. For
+   * any two paths `a` and `b` that have the same root, `a / (b.relativeTo(a))` is equal to `b`. If
+   * both paths don't use the same slash, the resolved path will use the slash of the [other] path.
+   *
+   * @throws IllegalArgumentException if this path and the [other] path are not both
+   * [absolute paths][isAbsolute] or both [relative paths][isRelative], or if they are both
+   * [absolute paths][isAbsolute] but of different roots (C: vs D:, or C: vs \\server, etc.).
+   * It will also throw if the relative path is impossible to resolve. For instance, it is
+   * impossible to resolve the path `../a` relative to `../../b`.
+   */
+  @Throws(IllegalArgumentException::class)
+  fun relativeTo(other: Path): Path
+
+  /**
+   * Returns the normalized version of this path. This has the same effect as
+   * `this.toString().toPath(normalize = true)`.
+   */
+  fun normalized(): Path
 
   override fun compareTo(other: Path): Int
 
@@ -203,8 +284,26 @@ expect class Path internal constructor(bytes: ByteString) : Comparable<Path> {
   override fun toString(): String
 
   companion object {
+    /**
+     * Either `/` (on UNIX-like systems including Android, iOS, and Linux) or `\` (on Windows
+     * systems).
+     *
+     * This separator is used by `FileSystem.SYSTEM` and possibly other file systems on the host
+     * system. Some file system implementations may not use this separator.
+     */
     val DIRECTORY_SEPARATOR: String
 
-    fun String.toPath(): Path
+    /**
+     * Returns the [Path] representation for this string.
+     *
+     * Set [normalize] to true to eagerly consume `..` segments in your path. In all cases, leading
+     * `..` on absolute paths will be removed.
+     *
+     * ```
+     * "/Users/jesse/Documents/../notes.txt".toPath(normalize = false).toString() => "/Users/jesse/Documents/../notes.txt"
+     * "/Users/jesse/Documents/../notes.txt".toPath(normalize = true).toString() => "/Users/jesse/notes.txt"
+     * ```
+     */
+    fun String.toPath(normalize: Boolean = false): Path
   }
 }

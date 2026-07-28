@@ -1,9 +1,21 @@
-import aQute.bnd.gradle.BundleTaskConvention
-import ru.vyarus.gradle.plugin.animalsniffer.AnimalSnifferExtension
+import aQute.bnd.gradle.BundleTaskExtension
+import com.vanniktech.maven.publish.JavadocJar
+import com.vanniktech.maven.publish.KotlinMultiplatform
+import com.vanniktech.maven.publish.MavenPublishBaseExtension
+import kotlinx.validation.ApiValidationExtension
+import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
+import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTargetWithTests
+import org.jetbrains.kotlin.gradle.plugin.mpp.NativeBuildType
+import org.jetbrains.kotlin.gradle.plugin.mpp.TestExecutable
+import org.jetbrains.kotlin.konan.target.Family
 
 plugins {
   kotlin("multiplatform")
-  id("ru.vyarus.animalsniffer")
+  id("app.cash.burst")
+  id("org.jetbrains.dokka")
+  id("com.vanniktech.maven.publish.base")
+  id("build-support")
+  id("binary-compatibility-validator")
 }
 
 /*
@@ -12,201 +24,212 @@ plugins {
  *
  * ```
  *   common
- *   |-- jvm
  *   |-- js
- *   '-- native
- *       |- unix
- *       |   |-- apple
- *       |   |   |-- iosArm64
- *       |   |   |-- iosX64
- *       |   |   |-- macosX64
- *       |   |   |-- watchosArm32
- *       |   |   |-- watchosArm64
- *       |   |   '-- watchosX86
- *       |   '-- linux
- *       |       '-- linuxX64
- *       '-- mingw
- *           '-- mingwX64
+ *   |-- jvm
+ *   |-- native
+ *   |   |-- mingw
+ *   |   |   '-- mingwX64
+ *   |   '-- unix
+ *   |       |-- apple
+ *   |       |   |-- iosArm64
+ *   |       |   |-- iosX64
+ *   |       |   |-- macosX64
+ *   |       |   |-- tvosArm64
+ *   |       |   |-- tvosX64
+ *   |       |   |-- watchosArm32
+ *   |       |   |-- watchosArm64
+ *   |       '-- linux
+ *   |           |-- linuxX64
+ *   |           '-- linuxArm64
+ *   '-- wasm
+ *       '-- wasmJs
+ *       '-- wasmWasi
  * ```
  *
- * Every child of `unix` also includes a source set that depends on the pointer size:
- *
- *  * `sizet32` for watchOS, including watchOS 64-bit architectures
- *  * `sizet64` for everything else
- *
- * The `nonJvm` and `nonJs` source sets exist and exclude a platform.
+ * The `nonJvm`, `nonJs`, `nonApple`, etc. source sets exclude the corresponding platforms.
  *
  * The `hashFunctions` source set builds on all platforms. It ships as a main source set on non-JVM
  * platforms and as a test source set on the JVM platform.
+ *
+ * The `systemFileSystem` source set is used on jvm and native targets, and provides the FileSystem.SYSTEM property.
  */
 kotlin {
-  jvm {
-    withJava()
-  }
-  if (kmpJsEnabled) {
-    js {
-      compilations.all {
-        kotlinOptions {
-          moduleKind = "umd"
-          sourceMap = true
-          metaInfo = true
-        }
-      }
-      nodejs {
-        testTask {
-          useMocha {
-            timeout = "30s"
-          }
-        }
-      }
-    }
-  }
-  if (kmpNativeEnabled) {
-    iosX64()
-    iosArm64()
-    watchosArm32()
-    watchosArm64()
-    watchosX86()
-    // Required to generate tests tasks: https://youtrack.jetbrains.com/issue/KT-26547
-    linuxX64()
-    macosX64()
-    mingwX64()
-  }
+  configureOrCreateOkioPlatforms()
+
   sourceSets {
     all {
       languageSettings.apply {
-        useExperimentalAnnotation("kotlin.RequiresOptIn")
+        // Required for CPointer etc. since Kotlin 1.9.
+        optIn("kotlinx.cinterop.ExperimentalForeignApi")
+        // Required for Contract API. since Kotlin 1.3.
+        optIn("kotlin.contracts.ExperimentalContracts")
+      }
+    }
+    matching { it.name.endsWith("Test") }.all {
+      languageSettings {
+        optIn("kotlin.time.ExperimentalTime")
       }
     }
 
-    val commonMain by getting {
-      dependencies {
-        api(deps.kotlin.stdLib.common)
-      }
-    }
+    val commonMain by getting
     val commonTest by getting {
       dependencies {
-        implementation(deps.kotlin.test.common)
-        implementation(deps.kotlin.test.annotations)
-        implementation(deps.kotlin.time)
-
-        implementation(project(":okio-fakefilesystem"))
+        implementation(libs.kotlin.test)
+        implementation(projects.okioTestingSupport)
       }
     }
-    val nonJsMain by creating {
+
+    val hashFunctions by creating {
+      dependsOn(commonMain)
     }
+
+    val nonAppleMain by creating {
+      dependsOn(hashFunctions)
+    }
+
+    val nonWasmTest by creating {
+      dependsOn(commonTest)
+      dependencies {
+        implementation(libs.kotlin.time)
+        implementation(projects.okioFakefilesystem)
+      }
+    }
+
     val nonJvmMain by creating {
-      kotlin.srcDir("src/hashFunctions/kotlin")
+      dependsOn(hashFunctions)
+      dependsOn(commonMain)
+    }
+
+    val nonJsMain by creating {
+      dependsOn(commonMain)
+    }
+
+    val systemFileSystemMain by creating {
+      dependsOn(commonMain)
+    }
+
+    val nonJvmTest by creating {
+      dependsOn(commonTest)
+    }
+
+    val zlibMain by creating {
+      dependsOn(commonMain)
+    }
+
+    val zlibTest by creating {
+      dependsOn(commonTest)
+      dependencies {
+        implementation(libs.test.assertk)
+      }
     }
 
     val jvmMain by getting {
+      dependsOn(zlibMain)
+      dependsOn(systemFileSystemMain)
       dependsOn(nonJsMain)
-      dependencies {
-        api(deps.kotlin.stdLib.jdk8)
-        compileOnly(deps.animalSniffer.annotations)
-      }
     }
     val jvmTest by getting {
-      kotlin.srcDir("src/hashFunctions/kotlin")
+      kotlin.srcDir("src/hashFunctions")
+      dependsOn(nonWasmTest)
+      dependsOn(zlibTest)
       dependencies {
-        implementation(deps.test.junit)
-        implementation(deps.test.assertj)
-        implementation(deps.kotlin.test.jdk)
+        implementation(libs.test.junit)
+        implementation(libs.test.jimfs)
       }
     }
 
     if (kmpJsEnabled) {
       val jsMain by getting {
         dependsOn(nonJvmMain)
-        dependencies {
-          api(deps.kotlin.stdLib.js)
-        }
+        dependsOn(nonAppleMain)
       }
       val jsTest by getting {
-        dependencies {
-          implementation(deps.kotlin.test.js)
-          implementation(project(":okio-nodefilesystem"))
-        }
+        dependsOn(nonWasmTest)
+        dependsOn(nonJvmTest)
       }
     }
 
     if (kmpNativeEnabled) {
-      val nativeMain by creating {
-        dependsOn(nonJsMain)
-        dependsOn(nonJvmMain)
-      }
-      val nativeTest by creating {
-        dependsOn(commonTest)
-      }
+      createSourceSet("nativeMain", parent = nonJvmMain)
+        .also { nativeMain ->
+          nativeMain.dependsOn(zlibMain)
+          nativeMain.dependsOn(systemFileSystemMain)
+          createSourceSet(
+            "mingwMain",
+            parent = nativeMain,
+            children = mingwTargets,
+          ).also { mingwMain ->
+            mingwMain.dependsOn(nonAppleMain)
+            mingwMain.dependsOn(nonJsMain)
+          }
+          createSourceSet("unixMain", parent = nativeMain)
+            .also { unixMain ->
+              unixMain.dependsOn(nonJsMain)
+              createSourceSet(
+                "linuxMain",
+                parent = unixMain,
+                children = linuxTargets,
+              ).also { linuxMain ->
+                linuxMain.dependsOn(nonAppleMain)
+              }
+              createSourceSet(
+                name = "appleMain",
+                parent = unixMain,
+                children = appleTargets,
+              ).also { appleMain ->
+                createSourceSet(
+                  name = "appleNonMacosX64Main",
+                  parent = appleMain,
+                  children = appleTargets - "macosX64",
+                )
+              }
+            }
+        }
 
-      val sizet32Main by creating {
-        dependsOn(nativeMain)
-      }
-      val sizet64Main by creating {
-        dependsOn(nativeMain)
-      }
+      createSourceSet("nativeTest", parent = commonTest, children = mingwTargets + linuxTargets)
+        .also { nativeTest ->
+          nativeTest.dependsOn(nonJvmTest)
+          nativeTest.dependsOn(nonWasmTest)
+          nativeTest.dependsOn(zlibTest)
+          createSourceSet("appleTest", parent = nativeTest, children = appleTargets)
+        }
+    }
 
-      val mingwMain by creating {
-        dependsOn(nativeMain)
-      }
-      val mingwX64Main by getting {
-        dependsOn(mingwMain)
-      }
-      val mingwX64Test by getting {
-        dependsOn(nativeTest)
-      }
+    if (kmpWasmEnabled) {
+      createSourceSet("wasmMain", parent = commonMain, children = wasmTargets)
+        .also { wasmMain ->
+          wasmMain.dependsOn(nonJsMain)
+          wasmMain.dependsOn(nonJvmMain)
+          wasmMain.dependsOn(nonAppleMain)
+        }
+      createSourceSet("wasmTest", parent = commonTest, children = wasmTargets)
+        .also { wasmTest ->
+          wasmTest.dependsOn(nonJvmTest)
+        }
+    }
+  }
 
-      val unixMain by creating {
-        dependsOn(nativeMain)
+  targets.withType<KotlinNativeTarget> {
+    if (konanTarget.family == Family.LINUX) {
+      compilations["main"].cinterops.create("linux") {
+        packageName("okio.internal.linux")
+        headers(
+          File(project.projectDir, "src/linuxMain/headers/include/uapi/linux/stat.h"),
+          File(project.projectDir, "src/linuxMain/headers/okio_statx.h"),
+        )
       }
-
-      val appleMain by creating {
-        dependsOn(unixMain)
+    }
+  }
+  targets.withType<KotlinNativeTargetWithTests<*>> {
+    binaries {
+      // Configure a separate test where code runs in background
+      test("background", setOf(NativeBuildType.DEBUG)) {
+        freeCompilerArgs += "-trw"
       }
-      val appleTest by creating {
-        dependsOn(nativeTest)
-      }
-      val iosX64Main by getting {}
-      val iosArm64Main by getting {}
-      val macosX64Main by getting {}
-      for (it in listOf(iosX64Main, iosArm64Main, macosX64Main)) {
-        it.dependsOn(sizet64Main)
-        it.dependsOn(appleMain)
-      }
-
-      val iosX64Test by getting {}
-      val iosArm64Test by getting {}
-      val macosX64Test by getting {}
-      for (it in listOf(iosX64Test, iosArm64Test, macosX64Test)) {
-        it.dependsOn(appleTest)
-      }
-
-      val watchosArm32Main by getting {}
-      val watchosArm64Main by getting {}
-      val watchosX86Main by getting {}
-      for (it in listOf(watchosArm32Main, watchosArm64Main, watchosX86Main)) {
-        // Note that size_t is 32-bit on all watchOS versions (ie. pointers are always 32-bit).
-        it.dependsOn(sizet32Main)
-        it.dependsOn(appleMain)
-      }
-
-      val watchosArm32Test by getting {}
-      val watchosArm64Test by getting {}
-      val watchosX86Test by getting {}
-      for (it in listOf(watchosArm32Test, watchosArm64Test, watchosX86Test)) {
-        it.dependsOn(appleTest)
-      }
-
-      val linuxMain by creating {
-        dependsOn(unixMain)
-        dependsOn(nativeMain)
-      }
-      val linuxX64Main by getting {
-        dependsOn(sizet64Main)
-        dependsOn(linuxMain)
-      }
-      val linuxX64Test by getting {
-        dependsOn(nativeTest)
+    }
+    testRuns {
+      val background by creating {
+        setExecutionSourceFrom(binaries.getByName("backgroundDebugTest") as TestExecutable)
       }
     }
   }
@@ -214,31 +237,32 @@ kotlin {
 
 tasks {
   val jvmJar by getting(Jar::class) {
-    val bndConvention = BundleTaskConvention(this)
-    bndConvention.setBnd(
+    // BundleTaskExtension() crashes unless there's a 'main' source set.
+    sourceSets.create(SourceSet.MAIN_SOURCE_SET_NAME)
+    val bndExtension = BundleTaskExtension(this)
+    bndExtension.setBnd(
       """
       Export-Package: okio
       Automatic-Module-Name: okio
       Bundle-SymbolicName: com.squareup.okio
-      """
+      """,
     )
-    // Call the convention when the task has finished to modify the jar to contain OSGi metadata.
+    // Call the extension when the task has finished to modify the jar to contain OSGi metadata.
     doLast {
-      bndConvention.buildBundle()
+      bndExtension.buildAction()
+        .execute(this)
     }
   }
 }
 
-configure<AnimalSnifferExtension> {
-  sourceSets = listOf(project.sourceSets.getByName("main"))
+configure<MavenPublishBaseExtension> {
+  configure(
+    KotlinMultiplatform(javadocJar = JavadocJar.Empty()),
+  )
 }
 
-val signature by configurations.getting {
+plugins.withId("binary-compatibility-validator") {
+  configure<ApiValidationExtension> {
+    ignoredProjects += "jmh"
+  }
 }
-
-dependencies {
-  signature(deps.animalSniffer.androidSignature)
-  signature(deps.animalSniffer.javaSignature)
-}
-
-apply(from = "$rootDir/gradle/gradle-mvn-mpp-push.gradle")

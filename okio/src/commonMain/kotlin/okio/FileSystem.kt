@@ -17,7 +17,7 @@ package okio
 
 /**
  * Read and write access to a hierarchical collection of files, addressed by [paths][Path]. This
- * is a natural interface to the [current computer's local file system][SYSTEM].
+ * is a natural interface to the current computer's local file system.
  *
  * Other implementations are possible:
  *
@@ -30,7 +30,7 @@ package okio
  *  * A ZIP file system could provide access to the contents of a `.zip` file.
  *
  * For improved capability and testability, consider structuring your classes to dependency inject
- * a `FileSystem` rather than using [SYSTEM] directly.
+ * a `FileSystem` rather than using `FileSystem.SYSTEM` directly.
  *
  * Small API
  * ---------
@@ -40,8 +40,8 @@ package okio
  * It is not suitable for high-latency or unreliable remote file systems. It lacks support for
  * retries, timeouts, cancellation, and bulk operations.
  *
- * It cannot create special file types like hard links, symlinks, pipes, or mounts. Reading
- * or writing these files works as if they were regular files.
+ * It cannot create special file types like hard links, pipes, or mounts. Reading or writing these
+ * files works as if they were regular files.
  *
  * It cannot read or write file access control features like the UNIX `chmod` and Windows access
  * control lists. It does honor these controls and will fail with an [IOException] if privileges
@@ -71,17 +71,28 @@ package okio
  *
  * The `java.io.File` class is Java's original file system API. The `delete` and `renameTo` methods
  * return false if the operation failed. The `list` method returns null if the file isn't a
- * directory or could not be listed. This class always throws `IOExceptions` when operations don't
- * succeed.
+ * directory or could not be listed. This class always throws an [IOException] when an operation
+ * doesn't succeed.
  *
- * The `java.nio.Path` and `java.nio.Files` classes are the entry points of Java's new file system
+ * The `java.nio.file.Path` and `java.nio.file.Files` classes are the entry points of Java's new file system
  * API. Each `Path` instance is scoped to a particular file system, though that is often implicit
  * because the `Paths.get()` function automatically uses the default (ie. system) file system.
  * In Okio's API paths are just identifiers; you must use a specific `FileSystem` object to do
  * I/O with.
+ *
+ * Closeable
+ * ---------
+ *
+ * Implementations of this interface may need to be closed to release resources.
+ *
+ * It is the file system implementor's responsibility to document whether a file system instance
+ * must be closed, and what happens to its open streams when the file system is closed. For example,
+ * the Java NIO FileSystem closes all of its open streams when the file system is closed.
+ *
+ * The built-in `FileSystem.SYSTEM` implementation does not need to be closed and closing it has no
+ * effect.
  */
-@ExperimentalFileSystem
-expect abstract class FileSystem() {
+expect abstract class FileSystem() : Closeable {
 
   /**
    * Resolves [path] against the current working directory and symlinks in this file system. The
@@ -126,26 +137,76 @@ expect abstract class FileSystem() {
   fun exists(path: Path): Boolean
 
   /**
-   * Returns the children of the directory identified by [dir]. The returned list is sorted using
-   * natural ordering. If [dir] is a relative path, the returned elements will also be relative
-   * paths. If it is an absolute path, the returned elements will also be absolute paths.
+   * Returns the children of [dir]. The returned list is sorted using natural ordering. If [dir] is
+   * a relative path, the returned elements will also be relative paths. If it is an absolute path,
+   * the returned elements will also be absolute paths.
    *
-   * @throws IOException if [dir] does not exist, is not a directory, or cannot be read. A directory
-   *     cannot be read if the current process doesn't have access to [dir], or if there's a loop of
-   *     symbolic links, or if any name is too long.
+   * Note that a path does not need to be a [directory][FileMetadata.isDirectory] for this function
+   * to return successfully. For example, mounted storage devices may have child files but do not
+   * identify themselves as directories.
+   *
+   * @throws IOException if [dir] does not exist or cannot be listed. A path cannot be listed if the
+   *     current process doesn't have access to [dir], or if there's a loop of symbolic links, or if
+   *     any name is too long.
    */
   @Throws(IOException::class)
   abstract fun list(dir: Path): List<Path>
 
   /**
-   * Returns a handle to operate on [file].
+   * Returns the children of the directory identified by [dir]. The returned list is sorted using
+   * natural ordering. If [dir] is a relative path, the returned elements will also be relative
+   * paths. If it is an absolute path, the returned elements will also be absolute paths.
+   *
+   * This returns null if [dir] does not exist or cannot be listed. A directory cannot be listed if
+   * the current process doesn't have access to [dir], or if there's a loop of symbolic links, or if
+   * any name is too long.
+   */
+  abstract fun listOrNull(dir: Path): List<Path>?
+
+  /**
+   * Returns a sequence that **lazily** traverses the children of [dir] using repeated calls to
+   * [list]. If none of [dir]'s children are directories this returns the same elements as [list].
+   *
+   * The returned sequence visits the tree of files in depth-first order. Parent paths are returned
+   * before their children.
+   *
+   * Note that [listRecursively] does not throw exceptions but the returned sequence does. When it
+   * is iterated, the returned sequence throws a [FileNotFoundException] if [dir] does not exist, or
+   * an [IOException] if [dir] cannot be listed.
+   *
+   * @param followSymlinks true to follow symlinks while traversing the children. If [dir] itself is
+   *     a symlink it will be followed even if this parameter is false.
+   */
+  open fun listRecursively(dir: Path, followSymlinks: Boolean = false): Sequence<Path>
+
+  /**
+   * Returns a handle to read [file]. This will fail if the file doesn't already exist.
    *
    * @throws IOException if [file] does not exist, is not a file, or cannot be accessed. A file
    *     cannot be accessed if the current process doesn't have sufficient permissions for [file],
    *     if there's a loop of symbolic links, or if any name is too long.
    */
   @Throws(IOException::class)
-  abstract fun open(file: Path): FileHandle
+  abstract fun openReadOnly(file: Path): FileHandle
+
+  /**
+   * Returns a handle to read and write [file]. This will create the file if it doesn't already
+   * exist.
+   *
+   * @param mustCreate true to throw an [IOException] instead of overwriting an existing file.
+   *     This is equivalent to `O_EXCL` on POSIX and `CREATE_NEW` on Windows.
+   * @param mustExist true to throw an [IOException] instead of creating a new file. This is
+   *     equivalent to `r+` on POSIX and `OPEN_EXISTING` on Windows.
+   * @throws IOException if [file] is not a file, or cannot be accessed. A file cannot be accessed
+   *     if the current process doesn't have sufficient reading and writing permissions for [file],
+   *     if there's a loop of symbolic links, or if any name is too long.
+   */
+  @Throws(IOException::class)
+  abstract fun openReadWrite(
+    file: Path,
+    mustCreate: Boolean = false,
+    mustExist: Boolean = false,
+  ): FileHandle
 
   /**
    * Returns a source that reads the bytes of [file] from beginning to end.
@@ -168,49 +229,64 @@ expect abstract class FileSystem() {
    * Returns a sink that writes bytes to [file] from beginning to end. If [file] already exists it
    * will be replaced with the new data.
    *
+   * @param mustCreate true to throw an [IOException] instead of overwriting an existing file.
+   *     This is equivalent to `O_EXCL` on POSIX and `CREATE_NEW` on Windows.
+   *
    * @throws IOException if [file] cannot be written. A file cannot be written if its enclosing
    *     directory does not exist, if the current process doesn't have access to [file], if there's
    *     a loop of symbolic links, or if any name is too long.
    */
   @Throws(IOException::class)
-  abstract fun sink(file: Path): Sink
+  abstract fun sink(file: Path, mustCreate: Boolean = false): Sink
 
   /**
    * Creates a sink to write [file], executes [writerAction] to write it, and then closes the sink.
    * This is a compact way to write a file.
+   *
+   * @param mustCreate true to throw an [IOException] instead of overwriting an existing file.
+   *     This is equivalent to `O_EXCL` on POSIX and `CREATE_NEW` on Windows.
    */
   @Throws(IOException::class)
-  inline fun <T> write(file: Path, writerAction: BufferedSink.() -> T): T
+  inline fun <T> write(
+    file: Path,
+    mustCreate: Boolean = false,
+    writerAction: BufferedSink.() -> T,
+  ): T
 
   /**
    * Returns a sink that appends bytes to the end of [file], creating it if it doesn't already
    * exist.
    *
+   * @param mustExist true to throw an [IOException] instead of creating a new file. This is
+   *     equivalent to `r+` on POSIX and `OPEN_EXISTING` on Windows.
+   *
    * @throws IOException if [file] cannot be written. A file cannot be written if its enclosing
    *     directory does not exist, if the current process doesn't have access to [file], if there's
    *     a loop of symbolic links, or if any name is too long.
    */
   @Throws(IOException::class)
-  abstract fun appendingSink(file: Path): Sink
+  abstract fun appendingSink(file: Path, mustExist: Boolean = false): Sink
 
   /**
    * Creates a directory at the path identified by [dir].
    *
+   * @param mustCreate true to throw an [IOException] if the directory already exists.
    * @throws IOException if [dir]'s parent does not exist, is not a directory, or cannot be written.
-   *     A directory cannot be created if it already exists, if the current process doesn't have
-   *     access, if there's a loop of symbolic links, or if any name is too long.
+   *     A directory cannot be created if the current process doesn't have access, if there's a loop
+   *     of symbolic links, or if any name is too long.
    */
   @Throws(IOException::class)
-  abstract fun createDirectory(dir: Path)
+  abstract fun createDirectory(dir: Path, mustCreate: Boolean = false)
 
   /**
    * Creates a directory at the path identified by [dir], and any enclosing parent path directories,
    * recursively.
    *
+   * @param mustCreate true to throw an [IOException] instead of overwriting an existing directory.
    * @throws IOException if any [metadata] or [createDirectory] operation fails.
    */
   @Throws(IOException::class)
-  fun createDirectories(dir: Path)
+  fun createDirectories(dir: Path, mustCreate: Boolean = false)
 
   /**
    * Moves [source] to [target] in-place if the underlying file system supports it. If [target]
@@ -264,7 +340,7 @@ expect abstract class FileSystem() {
   abstract fun atomicMove(source: Path, target: Path)
 
   /**
-   * Copies all of the bytes from the file at [source] to the file at [target]. This does not copy
+   * Copies all the bytes from the file at [source] to the file at [target]. This does not copy
    * file metadata like last modified time, permissions, or extended attributes.
    *
    * This function is not atomic; a failure may leave [target] in an inconsistent state. For
@@ -278,13 +354,13 @@ expect abstract class FileSystem() {
   /**
    * Deletes the file or directory at [path].
    *
-   * @throws IOException if there is nothing at [path] to delete, or if there is a file or directory
-   *     but it could not be deleted. Deletes fail if the current process doesn't have access, if
-   *     the file system is readonly, or if [path] is a non-empty directory. This list of potential
-   *     problems is not exhaustive.
+   * @param mustExist true to throw an [IOException] if there is nothing at [path] to delete.
+   * @throws IOException if there is a file or directory but it could not be deleted. Deletes fail
+   *     if the current process doesn't have access, if the file system is readonly, or if [path]
+   *     is a non-empty directory. This list of potential problems is not exhaustive.
    */
   @Throws(IOException::class)
-  abstract fun delete(path: Path)
+  abstract fun delete(path: Path, mustExist: Boolean = false)
 
   /**
    * Recursively deletes all children of [fileOrDirectory] if it is a directory, then deletes
@@ -294,10 +370,26 @@ expect abstract class FileSystem() {
    * or deleted in [fileOrDirectory] while this function is executing, this may fail with an
    * [IOException].
    *
+   * @param mustExist true to throw an [IOException] if there is nothing at [fileOrDirectory] to
+   *     delete.
    * @throws IOException if any [metadata], [list], or [delete] operation fails.
    */
   @Throws(IOException::class)
-  open fun deleteRecursively(fileOrDirectory: Path)
+  open fun deleteRecursively(fileOrDirectory: Path, mustExist: Boolean = false)
+
+  /**
+   * Creates a symbolic link at [source] that resolves to [target]. If [target] is a relative path,
+   * it is relative to `source.parent`.
+   *
+   * @throws IOException if [source] cannot be created. This may be because it already exists
+   *     or because its storage doesn't support symlinks. This list of potential problems is not
+   *     exhaustive.
+   */
+  @Throws(IOException::class)
+  abstract fun createSymlink(source: Path, target: Path)
+
+  @Throws(IOException::class)
+  override fun close()
 
   companion object {
     /**
@@ -308,6 +400,10 @@ expect abstract class FileSystem() {
      *  * **JVM and Android**: the path in the `java.io.tmpdir` system property
      *  * **Linux, iOS, and macOS**: the path in the `TMPDIR` environment variable.
      *  * **Windows**: the first non-null of `TEMP`, `TMP`, and `USERPROFILE` environment variables.
+     *
+     * **Note that the returned directory is not generally private.** Other users or processes that
+     * share this file system may read data that is written to this directory, or write malicious
+     * data for this process to receive.
      */
     val SYSTEM_TEMPORARY_DIRECTORY: Path
   }

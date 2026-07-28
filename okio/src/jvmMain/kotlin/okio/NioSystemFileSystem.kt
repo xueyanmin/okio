@@ -15,47 +15,58 @@
  */
 package okio
 
-import org.codehaus.mojo.animal_sniffer.IgnoreJRERequirement
+import java.nio.file.FileSystemException
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.NoSuchFileException
+import java.nio.file.Path as NioPath
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.FileTime
+import okio.Path.Companion.toOkioPath
 
 /**
- * Extends [JvmSystemFileSystem] for platforms that support `java.nio.files` first introduced in
+ * Extends [JvmSystemFileSystem] for platforms that support `java.nio.file` first introduced in
  * Java 7 and Android 8.0 (API level 26).
  */
-@ExperimentalFileSystem
-@IgnoreJRERequirement // Only used on platforms that support java.nio.file.
-internal class NioSystemFileSystem : JvmSystemFileSystem() {
+internal open class NioSystemFileSystem : JvmSystemFileSystem() {
   override fun metadataOrNull(path: Path): FileMetadata? {
-    val nioPath = path.toNioPath()
+    return metadataOrNull(path.toNioPath())
+  }
 
+  protected fun metadataOrNull(nioPath: NioPath): FileMetadata? {
     val attributes = try {
       Files.readAttributes(
         nioPath,
         BasicFileAttributes::class.java,
-        LinkOption.NOFOLLOW_LINKS
+        LinkOption.NOFOLLOW_LINKS,
       )
     } catch (_: NoSuchFileException) {
       return null
+    } catch (_: FileSystemException) {
+      return null
+    }
+
+    val symlinkTarget: NioPath? = if (attributes.isSymbolicLink) {
+      Files.readSymbolicLink(nioPath)
+    } else {
+      null
     }
 
     return FileMetadata(
       isRegularFile = attributes.isRegularFile,
       isDirectory = attributes.isDirectory,
+      symlinkTarget = symlinkTarget?.toOkioPath(),
       size = attributes.size(),
       createdAtMillis = attributes.creationTime()?.zeroToNull(),
       lastModifiedAtMillis = attributes.lastModifiedTime()?.zeroToNull(),
-      lastAccessedAtMillis = attributes.lastAccessTime()?.zeroToNull()
+      lastAccessedAtMillis = attributes.lastAccessTime()?.zeroToNull(),
     )
   }
 
   /**
-   * Returns this time as a epoch millis. If this is 0L this returns null, because epoch time 0L is
+   * Returns this time as an epoch millis. If this is 0L this returns null, because epoch time 0L is
    * a special value that indicates the requested time was not available.
    */
   private fun FileTime.zeroToNull(): Long? {
@@ -70,6 +81,10 @@ internal class NioSystemFileSystem : JvmSystemFileSystem() {
     } catch (e: UnsupportedOperationException) {
       throw IOException("atomic move not supported")
     }
+  }
+
+  override fun createSymlink(source: Path, target: Path) {
+    Files.createSymbolicLink(source.toNioPath(), target.toNioPath())
   }
 
   override fun toString() = "NioSystemFileSystem"

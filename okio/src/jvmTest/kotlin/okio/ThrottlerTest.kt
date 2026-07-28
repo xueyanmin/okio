@@ -15,12 +15,11 @@
  */
 package okio
 
+import app.cash.burst.InterceptTest
+import kotlin.test.Ignore
 import okio.TestUtil.randomSource
-import org.junit.After
 import org.junit.Before
 import org.junit.Test
-import java.util.concurrent.Executors
-import kotlin.test.Ignore
 
 @Ignore("These tests are flaky and fail on slower hardware, need to be improved")
 class ThrottlerTest {
@@ -31,17 +30,15 @@ class ThrottlerTest {
   private val throttlerSlow = Throttler()
 
   private val threads = 4
-  private val executorService = Executors.newFixedThreadPool(threads)
+
+  @InterceptTest
+  private val executorService = TestExecutor(threads)
   private var stopwatch = Stopwatch()
 
   @Before fun setup() {
     throttler.bytesPerSecond(4 * size, 4096, 8192)
     throttlerSlow.bytesPerSecond(2 * size, 4096, 8192)
     stopwatch = Stopwatch()
-  }
-
-  @After fun teardown() {
-    executorService.shutdown()
   }
 
   @Test fun source() {

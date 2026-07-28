@@ -17,8 +17,11 @@
 // TODO move to RealBufferedSource class: https://youtrack.jetbrains.com/issue/KT-20427
 @file:Suppress("NOTHING_TO_INLINE")
 
+@file:JvmName("-RealBufferedSource") // A leading '-' hides this class from Java.
+
 package okio.internal
 
+import kotlin.jvm.JvmName
 import okio.Buffer
 import okio.BufferedSource
 import okio.ByteString
@@ -30,12 +33,14 @@ import okio.Segment
 import okio.Sink
 import okio.buffer
 import okio.checkOffsetAndCount
+import okio.minOf
 
 internal inline fun RealBufferedSource.commonRead(sink: Buffer, byteCount: Long): Long {
   require(byteCount >= 0L) { "byteCount < 0: $byteCount" }
   check(!closed) { "closed" }
 
   if (buffer.size == 0L) {
+    if (byteCount == 0L) return 0L
     val read = source.read(buffer, Segment.SIZE.toLong())
     if (read == -1L) return -1L
   }
@@ -131,6 +136,7 @@ internal inline fun RealBufferedSource.commonRead(sink: ByteArray, offset: Int, 
   checkOffsetAndCount(sink.size.toLong(), offset.toLong(), byteCount.toLong())
 
   if (buffer.size == 0L) {
+    if (byteCount == 0) return 0
     val read = source.read(buffer, Segment.SIZE.toLong())
     if (read == -1L) return -1
   }
@@ -178,7 +184,7 @@ internal inline fun RealBufferedSource.commonReadUtf8(byteCount: Long): String {
 }
 
 internal inline fun RealBufferedSource.commonReadUtf8Line(): String? {
-  val newline = indexOf('\n'.toByte())
+  val newline = indexOf('\n'.code.toByte())
 
   return if (newline == -1L) {
     if (buffer.size != 0L) {
@@ -194,11 +200,11 @@ internal inline fun RealBufferedSource.commonReadUtf8Line(): String? {
 internal inline fun RealBufferedSource.commonReadUtf8LineStrict(limit: Long): String {
   require(limit >= 0) { "limit < 0: $limit" }
   val scanLength = if (limit == Long.MAX_VALUE) Long.MAX_VALUE else limit + 1
-  val newline = indexOf('\n'.toByte(), 0, scanLength)
+  val newline = indexOf('\n'.code.toByte(), 0, scanLength)
   if (newline != -1L) return buffer.readUtf8Line(newline)
   if (scanLength < Long.MAX_VALUE &&
-    request(scanLength) && buffer[scanLength - 1] == '\r'.toByte() &&
-    request(scanLength + 1) && buffer[scanLength] == '\n'.toByte()
+    request(scanLength) && buffer[scanLength - 1] == '\r'.code.toByte() &&
+    request(scanLength + 1) && buffer[scanLength] == '\n'.code.toByte()
   ) {
     return buffer.readUtf8Line(scanLength) // The line was 'limit' UTF-8 bytes followed by \r\n.
   }
@@ -206,7 +212,7 @@ internal inline fun RealBufferedSource.commonReadUtf8LineStrict(limit: Long): St
   buffer.copyTo(data, 0, okio.minOf(32, buffer.size))
   throw EOFException(
     "\\n not found: limit=" + minOf(buffer.size, limit) +
-      " content=" + data.readByteString().hex() + '…'.toString()
+      " content=" + data.readByteString().hex() + '…'.toString(),
   )
 }
 
@@ -259,10 +265,10 @@ internal inline fun RealBufferedSource.commonReadDecimalLong(): Long {
   var pos = 0L
   while (request(pos + 1)) {
     val b = buffer[pos]
-    if ((b < '0'.toByte() || b > '9'.toByte()) && (pos != 0L || b != '-'.toByte())) {
+    if ((b < '0'.code.toByte() || b > '9'.code.toByte()) && (pos != 0L || b != '-'.code.toByte())) {
       // Non-digit, or non-leading negative sign.
       if (pos == 0L) {
-        throw NumberFormatException("Expected leading [0-9] or '-' character but was 0x${b.toString(16)}")
+        throw NumberFormatException("Expected a digit or '-' but was 0x${b.toString(16)}")
       }
       break
     }
@@ -278,9 +284,9 @@ internal inline fun RealBufferedSource.commonReadHexadecimalUnsignedLong(): Long
   var pos = 0
   while (request((pos + 1).toLong())) {
     val b = buffer[pos.toLong()]
-    if ((b < '0'.toByte() || b > '9'.toByte()) &&
-      (b < 'a'.toByte() || b > 'f'.toByte()) &&
-      (b < 'A'.toByte() || b > 'F'.toByte())
+    if ((b < '0'.code.toByte() || b > '9'.code.toByte()) &&
+      (b < 'a'.code.toByte() || b > 'f'.code.toByte()) &&
+      (b < 'A'.code.toByte() || b > 'F'.code.toByte())
     ) {
       // Non-digit, or non-leading negative sign.
       if (pos == 0) {
@@ -327,23 +333,91 @@ internal inline fun RealBufferedSource.commonIndexOf(b: Byte, fromIndex: Long, t
   return -1L
 }
 
-internal inline fun RealBufferedSource.commonIndexOf(bytes: ByteString, fromIndex: Long): Long {
+internal fun RealBufferedSource.commonIndexOf(
+  bytes: ByteString,
+  bytesOffset: Int = 0,
+  byteCount: Int = bytes.size,
+  fromIndex: Long,
+  toIndex: Long = Long.MAX_VALUE,
+): Long {
+  checkOffsetAndCount(bytes.size.toLong(), bytesOffset.toLong(), byteCount.toLong())
+
   var fromIndex = fromIndex
   check(!closed) { "closed" }
 
   while (true) {
-    val result = buffer.indexOf(bytes, fromIndex)
+    val result = buffer.commonIndexOf(
+      bytes = bytes,
+      bytesOffset = bytesOffset,
+      byteCount = byteCount,
+      fromIndex = fromIndex,
+      toIndex = toIndex,
+    )
     if (result != -1L) return result
 
     val lastBufferSize = buffer.size
+    val nextFromIndex = lastBufferSize - byteCount + 1
+    if (nextFromIndex >= toIndex) return -1L
+    if (
+      !buffer.isMatchPossibleByExpandingBuffer(
+        bytes = bytes,
+        bytesOffset = bytesOffset,
+        byteCount = byteCount,
+        fromIndex = fromIndex,
+        toIndex = toIndex,
+      )
+    ) {
+      return -1L
+    }
     if (source.read(buffer, Segment.SIZE.toLong()) == -1L) return -1L
 
     // Keep searching, picking up from where we left off.
-    fromIndex = maxOf(fromIndex, lastBufferSize - bytes.size + 1)
+    fromIndex = maxOf(fromIndex, nextFromIndex)
   }
 }
 
-internal inline fun RealBufferedSource.commonIndexOfElement(targetBytes: ByteString, fromIndex: Long): Long {
+/**
+ * Returns true if loading more data could result in an `indexOf` match.
+ *
+ * This function's utility is avoiding potentially-slow `read` calls that cannot impact the result
+ * of an `indexOf` call. For example, consider this situation:
+ *
+ * ```
+ * val source = ...
+ * source.indexOf("hello", fromIndex = 0, toIndex = 4)
+ * ```
+ *
+ * If the source's loaded content is the string "shell", it is necessary to load more data because
+ * if the next loaded byte is 'o' then the result will be 1. But if the source's loaded content is
+ * 'look', we know the result is -1 without loading more data.
+ */
+private fun Buffer.isMatchPossibleByExpandingBuffer(
+  bytes: ByteString,
+  bytesOffset: Int,
+  byteCount: Int,
+  fromIndex: Long,
+  toIndex: Long,
+): Boolean {
+  // Load new data if the match could come entirely in that new data.
+  if (size < toIndex) return true
+
+  // Load new data if a prefix of 'bytes' matches a suffix of 'buffer'.
+  val begin = maxOf(1, size - toIndex + 1).toInt()
+  val limit = minOf(byteCount, size - fromIndex + 1).toInt()
+  for (i in limit - 1 downTo begin) {
+    if (rangeEquals(size - i, bytes, bytesOffset, i)) {
+      return true
+    }
+  }
+
+  // No matter what we load, we won't find a match.
+  return false
+}
+
+internal inline fun RealBufferedSource.commonIndexOfElement(
+  targetBytes: ByteString,
+  fromIndex: Long,
+): Long {
   var fromIndex = fromIndex
   check(!closed) { "closed" }
 
@@ -363,23 +437,22 @@ internal inline fun RealBufferedSource.commonRangeEquals(
   offset: Long,
   bytes: ByteString,
   bytesOffset: Int,
-  byteCount: Int
+  byteCount: Int,
 ): Boolean {
   check(!closed) { "closed" }
 
-  if (offset < 0L ||
-    bytesOffset < 0 ||
-    byteCount < 0 ||
-    bytes.size - bytesOffset < byteCount
-  ) {
-    return false
-  }
-  for (i in 0 until byteCount) {
-    val bufferOffset = offset + i
-    if (!request(bufferOffset + 1)) return false
-    if (buffer[bufferOffset] != bytes[bytesOffset + i]) return false
-  }
-  return true
+  if (byteCount < 0) return false
+  if (offset < 0) return false
+  if (bytesOffset < 0 || bytesOffset + byteCount > bytes.size) return false
+  if (byteCount == 0) return true
+
+  return commonIndexOf(
+    bytes = bytes,
+    bytesOffset = bytesOffset,
+    byteCount = byteCount,
+    fromIndex = offset,
+    toIndex = offset + 1,
+  ) != -1L
 }
 
 internal inline fun RealBufferedSource.commonPeek(): BufferedSource {

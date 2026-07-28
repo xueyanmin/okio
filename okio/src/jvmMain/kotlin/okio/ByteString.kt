@@ -15,14 +15,29 @@
  */
 package okio
 
+import java.io.EOFException
+import java.io.IOException
+import java.io.InputStream
+import java.io.ObjectInputStream
+import java.io.ObjectOutputStream
+import java.io.OutputStream
+import java.io.Serializable
+import java.nio.ByteBuffer
+import java.nio.charset.Charset
+import java.security.InvalidKeyException
+import java.security.MessageDigest
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 import okio.internal.commonBase64
 import okio.internal.commonBase64Url
 import okio.internal.commonCompareTo
+import okio.internal.commonCopyInto
 import okio.internal.commonDecodeBase64
 import okio.internal.commonDecodeHex
 import okio.internal.commonEncodeUtf8
 import okio.internal.commonEndsWith
 import okio.internal.commonEquals
+import okio.internal.commonEqualsConstantTime
 import okio.internal.commonGetByte
 import okio.internal.commonGetSize
 import okio.internal.commonHashCode
@@ -41,23 +56,11 @@ import okio.internal.commonToByteString
 import okio.internal.commonToString
 import okio.internal.commonUtf8
 import okio.internal.commonWrite
-import java.io.EOFException
-import java.io.IOException
-import java.io.InputStream
-import java.io.ObjectInputStream
-import java.io.ObjectOutputStream
-import java.io.OutputStream
-import java.io.Serializable
-import java.nio.ByteBuffer
-import java.nio.charset.Charset
-import java.security.InvalidKeyException
-import java.security.MessageDigest
-import javax.crypto.Mac
-import javax.crypto.spec.SecretKeySpec
+import okio.internal.decodeHexIgnoreWhitespace
 
 actual open class ByteString
 internal actual constructor(
-  internal actual val data: ByteArray
+  internal actual val data: ByteArray,
 ) : Serializable, Comparable<ByteString> {
   @Transient internal actual var hashCode: Int = 0 // Lazily computed; 0 if unknown.
   @Transient internal actual var utf8: String? = null // Lazily computed.
@@ -67,7 +70,8 @@ internal actual constructor(
   /** Constructs a new `String` by decoding the bytes using `charset`.  */
   open fun string(charset: Charset) = String(data, charset)
 
-  actual open fun base64() = commonBase64()
+  @JvmOverloads
+  actual open fun base64(includePadding: Boolean) = commonBase64(includePadding = includePadding)
 
   actual fun md5() = digest("MD5")
 
@@ -104,7 +108,8 @@ internal actual constructor(
     }
   }
 
-  actual open fun base64Url() = commonBase64Url()
+  @JvmOverloads
+  actual open fun base64Url(includePadding: Boolean) = commonBase64Url(includePadding = includePadding)
 
   actual open fun hex(): String = commonHex()
 
@@ -122,7 +127,8 @@ internal actual constructor(
   actual operator fun get(index: Int): Byte = internalGet(index)
 
   actual val size
-    @JvmName("size") get() = getSize()
+    @JvmName("size")
+    get() = getSize()
 
   internal actual open fun getSize() = commonGetSize()
 
@@ -146,15 +152,22 @@ internal actual constructor(
     offset: Int,
     other: ByteString,
     otherOffset: Int,
-    byteCount: Int
+    byteCount: Int,
   ): Boolean = commonRangeEquals(offset, other, otherOffset, byteCount)
 
   actual open fun rangeEquals(
     offset: Int,
     other: ByteArray,
     otherOffset: Int,
-    byteCount: Int
+    byteCount: Int,
   ): Boolean = commonRangeEquals(offset, other, otherOffset, byteCount)
+
+  actual open fun copyInto(
+    offset: Int,
+    target: ByteArray,
+    targetOffset: Int,
+    byteCount: Int,
+  ) = commonCopyInto(offset, target, targetOffset, byteCount)
 
   actual fun startsWith(prefix: ByteString) = commonStartsWith(prefix)
 
@@ -177,6 +190,9 @@ internal actual constructor(
   actual open fun lastIndexOf(other: ByteArray, fromIndex: Int) = commonLastIndexOf(other, fromIndex)
 
   actual override fun equals(other: Any?) = commonEquals(other)
+
+  actual fun equals(other: ByteString, constantTime: Boolean) =
+    if (constantTime) commonEqualsConstantTime(other) else this == other
 
   actual override fun hashCode() = commonHashCode()
 
@@ -203,7 +219,7 @@ internal actual constructor(
   @Deprecated(
     message = "moved to operator function",
     replaceWith = ReplaceWith(expression = "this[index]"),
-    level = DeprecationLevel.ERROR
+    level = DeprecationLevel.ERROR,
   )
   fun getByte(index: Int) = this[index]
 
@@ -211,7 +227,7 @@ internal actual constructor(
   @Deprecated(
     message = "moved to val",
     replaceWith = ReplaceWith(expression = "size"),
-    level = DeprecationLevel.ERROR
+    level = DeprecationLevel.ERROR,
   )
   fun size() = size
 
@@ -252,6 +268,12 @@ internal actual constructor(
     @JvmStatic
     actual fun String.decodeHex() = commonDecodeHex()
 
+    @JvmStatic
+    actual fun String.decodeHex(ignoreWhitespace: Boolean) = when {
+      ignoreWhitespace -> decodeHexIgnoreWhitespace()
+      else -> commonDecodeHex()
+    }
+
     /**
      * Reads `count` bytes from this [InputStream] and returns the result.
      *
@@ -279,9 +301,9 @@ internal actual constructor(
       message = "moved to extension function",
       replaceWith = ReplaceWith(
         expression = "string.decodeBase64()",
-        imports = ["okio.ByteString.Companion.decodeBase64"]
+        imports = ["okio.ByteString.Companion.decodeBase64"],
       ),
-      level = DeprecationLevel.ERROR
+      level = DeprecationLevel.ERROR,
     )
     fun decodeBase64(string: String) = string.decodeBase64()
 
@@ -290,9 +312,9 @@ internal actual constructor(
       message = "moved to extension function",
       replaceWith = ReplaceWith(
         expression = "string.decodeHex()",
-        imports = ["okio.ByteString.Companion.decodeHex"]
+        imports = ["okio.ByteString.Companion.decodeHex"],
       ),
-      level = DeprecationLevel.ERROR
+      level = DeprecationLevel.ERROR,
     )
     fun decodeHex(string: String) = string.decodeHex()
 
@@ -301,9 +323,9 @@ internal actual constructor(
       message = "moved to extension function",
       replaceWith = ReplaceWith(
         expression = "string.encode(charset)",
-        imports = ["okio.ByteString.Companion.encode"]
+        imports = ["okio.ByteString.Companion.encode"],
       ),
-      level = DeprecationLevel.ERROR
+      level = DeprecationLevel.ERROR,
     )
     fun encodeString(string: String, charset: Charset) = string.encode(charset)
 
@@ -312,9 +334,9 @@ internal actual constructor(
       message = "moved to extension function",
       replaceWith = ReplaceWith(
         expression = "string.encodeUtf8()",
-        imports = ["okio.ByteString.Companion.encodeUtf8"]
+        imports = ["okio.ByteString.Companion.encodeUtf8"],
       ),
-      level = DeprecationLevel.ERROR
+      level = DeprecationLevel.ERROR,
     )
     fun encodeUtf8(string: String) = string.encodeUtf8()
 
@@ -323,9 +345,9 @@ internal actual constructor(
       message = "moved to extension function",
       replaceWith = ReplaceWith(
         expression = "buffer.toByteString()",
-        imports = ["okio.ByteString.Companion.toByteString"]
+        imports = ["okio.ByteString.Companion.toByteString"],
       ),
-      level = DeprecationLevel.ERROR
+      level = DeprecationLevel.ERROR,
     )
     fun of(buffer: ByteBuffer) = buffer.toByteString()
 
@@ -334,9 +356,9 @@ internal actual constructor(
       message = "moved to extension function",
       replaceWith = ReplaceWith(
         expression = "array.toByteString(offset, byteCount)",
-        imports = ["okio.ByteString.Companion.toByteString"]
+        imports = ["okio.ByteString.Companion.toByteString"],
       ),
-      level = DeprecationLevel.ERROR
+      level = DeprecationLevel.ERROR,
     )
     fun of(array: ByteArray, offset: Int, byteCount: Int) = array.toByteString(offset, byteCount)
 
@@ -345,9 +367,9 @@ internal actual constructor(
       message = "moved to extension function",
       replaceWith = ReplaceWith(
         expression = "inputstream.readByteString(byteCount)",
-        imports = ["okio.ByteString.Companion.readByteString"]
+        imports = ["okio.ByteString.Companion.readByteString"],
       ),
-      level = DeprecationLevel.ERROR
+      level = DeprecationLevel.ERROR,
     )
     fun read(inputstream: InputStream, byteCount: Int) = inputstream.readByteString(byteCount)
   }

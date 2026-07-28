@@ -16,10 +16,7 @@
 
 package okio
 
-import okio.ByteString.Companion.decodeBase64
-import okio.ByteString.Companion.decodeHex
-import okio.ByteString.Companion.encodeUtf8
-import okio.internal.commonAsUtf8ToByteArray
+import app.cash.burst.Burst
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -29,21 +26,22 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import okio.ByteString.Companion.decodeBase64
+import okio.ByteString.Companion.decodeHex
+import okio.ByteString.Companion.encodeUtf8
+import okio.ByteString.Companion.toByteString
+import okio.internal.commonAsUtf8ToByteArray
 
-class ByteStringTest : AbstractByteStringTest(ByteStringFactory.BYTE_STRING)
-class SegmentedByteStringTest : AbstractByteStringTest(ByteStringFactory.SEGMENTED_BYTE_STRING)
-class ByteStringOneBytePerSegmentTest : AbstractByteStringTest(ByteStringFactory.ONE_BYTE_PER_SEGMENT)
-class OkioEncoderTest : AbstractByteStringTest(ByteStringFactory.OKIO_ENCODER)
-
-abstract class AbstractByteStringTest internal constructor(
-  private val factory: ByteStringFactory
+@Burst
+class ByteStringTest(
+  private val factory: ByteStringFactory,
 ) {
   @Test fun get() {
     val actual = factory.encodeUtf8("abc")
     assertEquals(3, actual.size)
-    assertEquals(actual[0], 'a'.toByte())
-    assertEquals(actual[1], 'b'.toByte())
-    assertEquals(actual[2], 'c'.toByte())
+    assertEquals(actual[0], 'a'.code.toByte())
+    assertEquals(actual[1], 'b'.code.toByte())
+    assertEquals(actual[2], 'c'.code.toByte())
     try {
       actual[-1]
       fail("no index out of bounds: -1")
@@ -203,6 +201,31 @@ abstract class AbstractByteStringTest internal constructor(
     assertEquals(ByteString.of(), factory.decodeHex(""))
   }
 
+  @Test fun equalsConstantTime() {
+    val byteString = factory.decodeHex("000102")
+    assertTrue(byteString.equals(byteString, constantTime = true))
+    assertTrue(byteString.equals("000102".decodeHex(), constantTime = true))
+    assertFalse(byteString.equals("800102".decodeHex(), constantTime = true))
+    assertFalse(byteString.equals("000180".decodeHex(), constantTime = true))
+    assertFalse(byteString.equals("0001".decodeHex(), constantTime = true))
+    assertFalse(byteString.equals("00010203".decodeHex(), constantTime = true))
+  }
+
+  @Test fun equalsConstantTimeEmptyTest() {
+    assertTrue(factory.decodeHex("").equals(ByteString.EMPTY, constantTime = true))
+    assertFalse(factory.decodeHex("").equals("00".decodeHex(), constantTime = true))
+  }
+
+  @Test fun equalsNotConstantTime() {
+    val byteString = factory.decodeHex("000102")
+    assertTrue(byteString.equals(byteString, constantTime = false))
+    assertTrue(byteString.equals("000102".decodeHex(), constantTime = false))
+    assertFalse(byteString.equals("800102".decodeHex(), constantTime = false))
+    assertFalse(byteString.equals("000180".decodeHex(), constantTime = false))
+    assertFalse(byteString.equals("0001".decodeHex(), constantTime = false))
+    assertFalse(byteString.equals("00010203".decodeHex(), constantTime = false))
+  }
+
   private val bronzeHorseman = "На берегу пустынных волн"
 
   @Test fun utf8() {
@@ -214,7 +237,7 @@ abstract class AbstractByteStringTest internal constructor(
       (
         "d09dd0b020d0b1d0b5d180d0b5d0b3d18320d0bfd183d181" +
           "d182d18bd0bdd0bdd18bd18520d0b2d0bed0bbd0bd"
-        ).decodeHex()
+        ).decodeHex(),
     )
     assertEquals(byteString.utf8(), bronzeHorseman)
   }
@@ -228,7 +251,7 @@ abstract class AbstractByteStringTest internal constructor(
   @Test fun toAsciiLowerCaseNoUppercase() {
     val s = factory.encodeUtf8("a1_+")
     assertEquals(s, s.toAsciiLowercase())
-    if (factory === ByteStringFactory.BYTE_STRING) {
+    if (factory === ByteStringFactory.BasicByteString) {
       assertSame(s, s.toAsciiLowercase())
     }
   }
@@ -277,7 +300,18 @@ abstract class AbstractByteStringTest internal constructor(
     assertEquals("AAAA", factory.encodeUtf8("\u0000\u0000\u0000").base64())
     assertEquals(
       "SG93IG1hbnkgbGluZXMgb2YgY29kZSBhcmUgdGhlcmU/ICdib3V0IDIgbWlsbGlvbi4=",
-      factory.encodeUtf8("How many lines of code are there? 'bout 2 million.").base64()
+      factory.encodeUtf8("How many lines of code are there? 'bout 2 million.").base64(),
+    )
+  }
+
+  @Test fun encodeBase64WithoutPadding() {
+    assertEquals("", factory.encodeUtf8("").base64(includePadding = false))
+    assertEquals("AA", factory.encodeUtf8("\u0000").base64(includePadding = false))
+    assertEquals("AAA", factory.encodeUtf8("\u0000\u0000").base64(includePadding = false))
+    assertEquals("AAAA", factory.encodeUtf8("\u0000\u0000\u0000").base64(includePadding = false))
+    assertEquals(
+      "SG93IG1hbnkgbGluZXMgb2YgY29kZSBhcmUgdGhlcmU/ICdib3V0IDIgbWlsbGlvbi4",
+      factory.encodeUtf8("How many lines of code are there? 'bout 2 million.").base64(includePadding = false),
     )
   }
 
@@ -288,7 +322,18 @@ abstract class AbstractByteStringTest internal constructor(
     assertEquals("AAAA", factory.encodeUtf8("\u0000\u0000\u0000").base64Url())
     assertEquals(
       "SG93IG1hbnkgbGluZXMgb2YgY29kZSBhcmUgdGhlcmU_ICdib3V0IDIgbWlsbGlvbi4=",
-      factory.encodeUtf8("How many lines of code are there? 'bout 2 million.").base64Url()
+      factory.encodeUtf8("How many lines of code are there? 'bout 2 million.").base64Url(),
+    )
+  }
+
+  @Test fun encodeBase64UrlWithoutPadding() {
+    assertEquals("", factory.encodeUtf8("").base64Url(includePadding = false))
+    assertEquals("AA", factory.encodeUtf8("\u0000").base64Url(includePadding = false))
+    assertEquals("AAA", factory.encodeUtf8("\u0000\u0000").base64Url(includePadding = false))
+    assertEquals("AAAA", factory.encodeUtf8("\u0000\u0000\u0000").base64Url(includePadding = false))
+    assertEquals(
+      "SG93IG1hbnkgbGluZXMgb2YgY29kZSBhcmUgdGhlcmU_ICdib3V0IDIgbWlsbGlvbi4",
+      factory.encodeUtf8("How many lines of code are there? 'bout 2 million.").base64Url(includePadding = false),
     )
   }
 
@@ -313,7 +358,7 @@ abstract class AbstractByteStringTest internal constructor(
       (
         "V2hhdCdzIHRvIGJlIHNjYXJlZCBhYm91dD8gSXQncyBqdXN0IGEgbGl0dGxlIGhpY2" +
           "N1cCBpbiB0aGUgcG93ZXIuLi4="
-        ).decodeBase64()!!.utf8()
+        ).decodeBase64()!!.utf8(),
     )
     // Uses two encoding styles. Malformed, but supported as a side-effect.
     assertEquals("ffffff".decodeHex(), "__//".decodeBase64())
@@ -329,28 +374,6 @@ abstract class AbstractByteStringTest internal constructor(
     assertEquals("", "    ".decodeBase64()!!.utf8())
   }
 
-  @Test fun encodeHex() {
-    assertEquals("000102", ByteString.of(0x0, 0x1, 0x2).hex())
-  }
-
-  @Test fun decodeHex() {
-    val actual = "CAFEBABE".decodeHex()
-    val expected = ByteString.of(-54, -2, -70, -66)
-    assertEquals(expected, actual)
-  }
-
-  @Test fun decodeHexOddNumberOfChars() {
-    assertFailsWith<IllegalArgumentException> {
-      "aaa".decodeHex()
-    }
-  }
-
-  @Test fun decodeHexInvalidChar() {
-    assertFailsWith<IllegalArgumentException> {
-      "a\u0000".decodeHex()
-    }
-  }
-
   @Test fun toStringOnEmpty() {
     assertEquals("[size=0]", factory.decodeHex("").toString())
   }
@@ -358,11 +381,11 @@ abstract class AbstractByteStringTest internal constructor(
   @Test fun toStringOnShortText() {
     assertEquals(
       "[text=Tyrannosaur]",
-      factory.encodeUtf8("Tyrannosaur").toString()
+      factory.encodeUtf8("Tyrannosaur").toString(),
     )
     assertEquals(
       "[text=təˈranəˌsôr]",
-      factory.decodeHex("74c999cb8872616ec999cb8c73c3b472").toString()
+      factory.decodeHex("74c999cb8872616ec999cb8c73c3b472").toString(),
     )
   }
 
@@ -379,7 +402,7 @@ abstract class AbstractByteStringTest internal constructor(
     assertEquals(
       "[size=517 text=Um, I'll tell you the problem with the scientific power that " +
         "you…]",
-      factory.encodeUtf8(raw).toString()
+      factory.encodeUtf8(raw).toString(),
     )
     val war = (
       "Սｍ, I'll 𝓽𝖾ll ᶌօ𝘂 ᴛℎ℮ 𝜚𝕣०ｂl𝖾ｍ ｗі𝕥𝒽 𝘵𝘩𝐞 𝓼𝙘𝐢𝔢𝓷𝗍𝜄𝚏𝑖ｃ 𝛠𝝾ｗ𝚎𝑟 𝕥ｈ⍺𝞃 𝛄𝓸𝘂'𝒓𝗲 υ𝖘𝓲𝗇ɡ 𝕙𝚎𝑟ｅ, " +
@@ -392,7 +415,7 @@ abstract class AbstractByteStringTest internal constructor(
     assertEquals(
       "[size=1496 text=Սｍ, I'll 𝓽𝖾ll ᶌօ𝘂 ᴛℎ℮ 𝜚𝕣०ｂl𝖾ｍ ｗі𝕥𝒽 𝘵𝘩𝐞 𝓼𝙘𝐢𝔢𝓷𝗍𝜄𝚏𝑖ｃ 𝛠𝝾ｗ𝚎𝑟 𝕥ｈ⍺𝞃 " +
         "𝛄𝓸𝘂…]",
-      factory.encodeUtf8(war).toString()
+      factory.encodeUtf8(war).toString(),
     )
   }
 
@@ -400,7 +423,7 @@ abstract class AbstractByteStringTest internal constructor(
     // Instead of emitting a literal newline in the toString(), these are escaped as "\n".
     assertEquals(
       "[text=a\\r\\nb\\nc\\rd\\\\e]",
-      factory.encodeUtf8("a\r\nb\nc\rd\\e").toString()
+      factory.encodeUtf8("a\r\nb\nc\rd\\e").toString(),
     )
   }
 
@@ -408,13 +431,13 @@ abstract class AbstractByteStringTest internal constructor(
     val byteString = factory.decodeHex(
       "" +
         "60b420bb3851d9d47acb933dbe70399bf6c92da33af01d4fb770e98c0325f41d3ebaf8986da712c82bcd4d55" +
-        "4bf0b54023c29b624de9ef9c2f931efc580f9afb"
+        "4bf0b54023c29b624de9ef9c2f931efc580f9afb",
     )
     assertEquals(
       "[hex=" +
         "60b420bb3851d9d47acb933dbe70399bf6c92da33af01d4fb770e98c0325f41d3ebaf8986da712c82bcd4d55" +
         "4bf0b54023c29b624de9ef9c2f931efc580f9afb]",
-      byteString.toString()
+      byteString.toString(),
     )
   }
 
@@ -422,13 +445,13 @@ abstract class AbstractByteStringTest internal constructor(
     val byteString = factory.decodeHex(
       "" +
         "60b420bb3851d9d47acb933dbe70399bf6c92da33af01d4fb770e98c0325f41d3ebaf8986da712c82bcd4d55" +
-        "4bf0b54023c29b624de9ef9c2f931efc580f9afba1"
+        "4bf0b54023c29b624de9ef9c2f931efc580f9afba1",
     )
     assertEquals(
       "[size=65 hex=" +
         "60b420bb3851d9d47acb933dbe70399bf6c92da33af01d4fb770e98c0325f41d3ebaf8986da712c82bcd4d55" +
         "4bf0b54023c29b624de9ef9c2f931efc580f9afb…]",
-      byteString.toString()
+      byteString.toString(),
     )
   }
 
@@ -441,7 +464,7 @@ abstract class AbstractByteStringTest internal constructor(
       factory.decodeHex("80"),
       factory.decodeHex("81"),
       factory.decodeHex("fe"),
-      factory.decodeHex("ff")
+      factory.decodeHex("ff"),
     )
 
     val sortedByteStrings = originalByteStrings.toMutableList()
@@ -479,7 +502,7 @@ abstract class AbstractByteStringTest internal constructor(
       factory.decodeHex("010101"),
       factory.decodeHex("7f0000"),
       factory.decodeHex("7f0000ffff"),
-      factory.decodeHex("ffffff")
+      factory.decodeHex("ffffff"),
     )
 
     val sortedByteStrings = originalByteStrings.toMutableList()
@@ -495,5 +518,102 @@ abstract class AbstractByteStringTest internal constructor(
     assertEquals("f1cd318e412b5f7226e5f377a9544ff7", md5().hex())
     assertEquals("0e4dd66217fc8d2e298b78c8cd9392870dcd065d0ff675d0edff5bcd227837e9", sha256().hex())
     assertEquals("483676b93c4417198b465083d196ec6a9fab8d004515874b8ff47e041f5f56303cc08179625030b8b5b721c09149a18f0f59e64e7ae099518cea78d3d83167e1", sha512().hex())
+  }
+
+  @Test fun copyInto() {
+    val byteString = factory.encodeUtf8("abcdefgh")
+    val byteArray = "WwwwXxxxYyyyZzzz".encodeToByteArray()
+    byteString.copyInto(target = byteArray, byteCount = 5)
+    assertEquals("abcdexxxYyyyZzzz", byteArray.decodeToString())
+  }
+
+  @Test fun copyIntoFullRange() {
+    val byteString = factory.encodeUtf8("abcdefghijklmnop")
+    val byteArray = "WwwwXxxxYyyyZzzz".encodeToByteArray()
+    byteString.copyInto(target = byteArray, byteCount = 16)
+    assertEquals("abcdefghijklmnop", byteArray.decodeToString())
+  }
+
+  @Test fun copyIntoWithTargetOffset() {
+    val byteString = factory.encodeUtf8("abcdefgh")
+    val byteArray = "WwwwXxxxYyyyZzzz".encodeToByteArray()
+    byteString.copyInto(target = byteArray, targetOffset = 11, byteCount = 5)
+    assertEquals("WwwwXxxxYyyabcde", byteArray.decodeToString())
+  }
+
+  @Test fun copyIntoWithSourceOffset() {
+    val byteString = factory.encodeUtf8("abcdefgh")
+    val byteArray = "WwwwXxxxYyyyZzzz".encodeToByteArray()
+    byteString.copyInto(offset = 3, target = byteArray, byteCount = 5)
+    assertEquals("defghxxxYyyyZzzz", byteArray.decodeToString())
+  }
+
+  @Test fun copyIntoWithAllParameters() {
+    val byteString = factory.encodeUtf8("abcdefgh")
+    val byteArray = "WwwwXxxxYyyyZzzz".encodeToByteArray()
+    byteString.copyInto(offset = 3, target = byteArray, targetOffset = 11, byteCount = 5)
+    assertEquals("WwwwXxxxYyydefgh", byteArray.decodeToString())
+  }
+
+  @Test fun copyIntoBoundsChecks() {
+    val byteString = factory.encodeUtf8("abcdefgh")
+    val byteArray = "WwwwXxxxYyyyZzzz".encodeToByteArray()
+    assertFailsWith<IndexOutOfBoundsException> {
+      byteString.copyInto(offset = -1, target = byteArray, targetOffset = 1, byteCount = 1)
+    }
+    assertFailsWith<IndexOutOfBoundsException> {
+      byteString.copyInto(offset = 9, target = byteArray, targetOffset = 0, byteCount = 0)
+    }
+    assertFailsWith<IndexOutOfBoundsException> {
+      byteString.copyInto(offset = 1, target = byteArray, targetOffset = -1, byteCount = 1)
+    }
+    assertFailsWith<IndexOutOfBoundsException> {
+      byteString.copyInto(offset = 1, target = byteArray, targetOffset = 17, byteCount = 1)
+    }
+    assertFailsWith<IndexOutOfBoundsException> {
+      byteString.copyInto(offset = 7, target = byteArray, targetOffset = 1, byteCount = 2)
+    }
+    assertFailsWith<IndexOutOfBoundsException> {
+      byteString.copyInto(offset = 1, target = byteArray, targetOffset = 15, byteCount = 2)
+    }
+  }
+
+  @Test fun copyEmptyAtBounds() {
+    val byteString = factory.encodeUtf8("abcdefgh")
+    val byteArray = "WwwwXxxxYyyyZzzz".encodeToByteArray()
+    byteString.copyInto(offset = 0, target = byteArray, targetOffset = 0, byteCount = 0)
+    assertEquals("WwwwXxxxYyyyZzzz", byteArray.decodeToString())
+    byteString.copyInto(offset = 0, target = byteArray, targetOffset = 16, byteCount = 0)
+    assertEquals("WwwwXxxxYyyyZzzz", byteArray.decodeToString())
+    byteString.copyInto(offset = 8, target = byteArray, targetOffset = 0, byteCount = 0)
+    assertEquals("WwwwXxxxYyyyZzzz", byteArray.decodeToString())
+  }
+
+  @Test
+  fun ofCopy() {
+    val bytes = "Hello, World!".encodeToByteArray()
+    val byteString = ByteString.of(*bytes)
+    // Verify that the bytes were copied out.
+    bytes[4] = 'a'.code.toByte()
+    assertEquals("Hello, World!", byteString.utf8())
+  }
+
+  @Test
+  fun ofCopyRange() {
+    val bytes = "Hello, World!".encodeToByteArray()
+    val byteString: ByteString = bytes.toByteString(2, 9)
+    // Verify that the bytes were copied out.
+    bytes[4] = 'a'.code.toByte()
+    assertEquals("llo, Worl", byteString.utf8())
+  }
+
+  @Test
+  fun getByteOutOfBounds() {
+    val byteString = factory.decodeHex("ab12")
+    try {
+      byteString[2]
+      fail()
+    } catch (expected: IndexOutOfBoundsException) {
+    }
   }
 }

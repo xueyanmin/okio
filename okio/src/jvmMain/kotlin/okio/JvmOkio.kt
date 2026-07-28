@@ -20,31 +20,31 @@
 
 package okio
 
-import org.codehaus.mojo.animal_sniffer.IgnoreJRERequirement
 import java.io.File
-import java.io.FileInputStream
 import java.io.FileNotFoundException
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.Socket
-import java.net.SocketTimeoutException
 import java.nio.file.Files
 import java.nio.file.OpenOption
-import java.nio.file.Path
+import java.nio.file.Path as NioPath
 import java.security.MessageDigest
-import java.util.logging.Level
-import java.util.logging.Logger
 import javax.crypto.Cipher
 import javax.crypto.Mac
+import okio.internal.DefaultSocket
+import okio.internal.PipeSocket
+import okio.internal.ResourceFileSystem
+import okio.internal.SocketAsyncTimeout
+import okio.internal.isAndroidGetsocknameError
 
 /** Returns a sink that writes to `out`. */
 fun OutputStream.sink(): Sink = OutputStreamSink(this, Timeout())
 
 private class OutputStreamSink(
   private val out: OutputStream,
-  private val timeout: Timeout
+  private val timeout: Timeout,
 ) : Sink {
 
   override fun write(source: Buffer, byteCount: Long) {
@@ -81,7 +81,7 @@ fun InputStream.source(): Source = InputStreamSource(this, Timeout())
 
 private open class InputStreamSource(
   private val input: InputStream,
-  private val timeout: Timeout
+  private val timeout: Timeout,
 ) : Source {
 
   override fun read(sink: Buffer, byteCount: Long): Long {
@@ -116,25 +116,6 @@ private open class InputStreamSource(
   override fun toString() = "source($input)"
 }
 
-private class FileSource(
-  private val input: FileInputStream
-) : InputStreamSource(input, Timeout()), Cursor {
-
-  override fun cursor(): Cursor = this
-
-  override fun position(): Long {
-    return input.channel.position()
-  }
-
-  override fun size(): Long {
-    return input.channel.size()
-  }
-
-  override fun seek(position: Long) {
-    input.channel.position(position)
-  }
-}
-
 /**
  * Returns a sink that writes to `socket`. Prefer this over [sink]
  * because this method honors timeouts. When the socket
@@ -159,32 +140,37 @@ fun Socket.source(): Source {
   return timeout.source(source)
 }
 
-private val logger = Logger.getLogger("okio.Okio")
+@JvmName("socket")
+fun Socket.asOkioSocket(): okio.Socket = DefaultSocket(this)
 
-private class SocketAsyncTimeout(private val socket: Socket) : AsyncTimeout() {
-  override fun newTimeoutException(cause: IOException?): IOException {
-    val ioe = SocketTimeoutException("timeout")
-    if (cause != null) {
-      ioe.initCause(cause)
-    }
-    return ioe
-  }
-
-  override fun timedOut() {
-    try {
-      socket.close()
-    } catch (e: Exception) {
-      logger.log(Level.WARNING, "Failed to close timed out socket $socket", e)
-    } catch (e: AssertionError) {
-      if (e.isAndroidGetsocknameError) {
-        // Catch this exception due to a Firmware issue up to android 4.2.2
-        // https://code.google.com/p/android/issues/detail?id=54072
-        logger.log(Level.WARNING, "Failed to close timed out socket $socket", e)
-      } else {
-        throw e
-      }
-    }
-  }
+/**
+ * Returns an array of two symmetric sockets, _A_ (element 0) and _B_ (element 1) that are mutually
+ * connected:
+ *
+ *  * Pipe AB connects _A_’s sink to _B_’s source.
+ *  * Pipe BA connects _B_’s sink to _A_’s source.
+ *
+ * Each pipe uses a buffer to decouple source and sink. This buffer has a user-specified maximum
+ * size. When a socket writer outruns its corresponding reader, the buffer fills up and eventually
+ * writes to the sink will block until the reader has caught up. Symmetrically, if a reader outruns
+ * its writer, reads block until there is data to be read.
+ *
+ * There is a buffer for Pipe AB and another for Pipe BA. The maximum amount of memory that could be
+ * held by the two sockets together is `maxBufferSize * 2`.
+ *
+ * Limit the amount of time spent waiting for the other party by configuring [timeouts][Timeout] on
+ * the source and the sink.
+ *
+ * When the sink is closed, source reads will continue to complete normally until the buffer is
+ * exhausted. At that point reads will return -1, indicating the end of the stream. But if the
+ * source is closed first, writes to the sink will immediately fail with an [IOException].
+ *
+ * Canceling either socket immediately fails all reads and writes on both sockets.
+ */
+fun inMemorySocketPair(maxBufferSize: Long): Array<okio.Socket> {
+  val ab = Pipe(maxBufferSize)
+  val ba = Pipe(maxBufferSize)
+  return arrayOf(PipeSocket(ab, ba), PipeSocket(ba, ab))
 }
 
 /** Returns a sink that writes to `file`. */
@@ -198,18 +184,16 @@ fun File.appendingSink(): Sink = FileOutputStream(this, true).sink()
 
 /** Returns a source that reads from `file`. */
 @Throws(FileNotFoundException::class)
-fun File.source(): Source = FileSource(inputStream())
-
-/** Returns a source that reads from `path`. */
-@Throws(IOException::class)
-@IgnoreJRERequirement // Can only be invoked on Java 7+.
-fun Path.sink(vararg options: OpenOption): Sink =
-  Files.newOutputStream(this, *options).sink()
+fun File.source(): Source = InputStreamSource(inputStream(), Timeout.NONE)
 
 /** Returns a sink that writes to `path`. */
 @Throws(IOException::class)
-@IgnoreJRERequirement // Can only be invoked on Java 7+.
-fun Path.source(vararg options: OpenOption): Source =
+fun NioPath.sink(vararg options: OpenOption): Sink =
+  Files.newOutputStream(this, *options).sink()
+
+/** Returns a source that reads from `path`. */
+@Throws(IOException::class)
+fun NioPath.source(vararg options: OpenOption): Source =
   Files.newInputStream(this, *options).source()
 
 /**
@@ -246,10 +230,4 @@ fun Sink.hashingSink(digest: MessageDigest): HashingSink = HashingSink(this, dig
  */
 fun Source.hashingSource(digest: MessageDigest): HashingSource = HashingSource(this, digest)
 
-/**
- * Returns true if this error is due to a firmware bug fixed after Android 4.2.2.
- * https://code.google.com/p/android/issues/detail?id=54072
- */
-internal val AssertionError.isAndroidGetsocknameError: Boolean get() {
-  return cause != null && message?.contains("getsockname failed") ?: false
-}
+fun ClassLoader.asResourceFileSystem(): FileSystem = ResourceFileSystem(this, indexEagerly = true)

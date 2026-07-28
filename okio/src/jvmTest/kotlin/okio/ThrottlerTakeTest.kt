@@ -15,9 +15,11 @@
  */
 package okio
 
-import org.assertj.core.api.Assertions.assertThat
-import org.junit.Test
+import assertk.assertThat
+import assertk.assertions.isEqualTo
+import assertk.assertions.isGreaterThan
 import java.util.concurrent.TimeUnit
+import org.junit.Test
 
 class ThrottlerTakeTest {
   private var nowNanos = 0L

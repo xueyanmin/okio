@@ -1,22 +1,24 @@
-import ru.vyarus.gradle.plugin.animalsniffer.AnimalSnifferExtension
+import com.vanniktech.maven.publish.JavadocJar
+import com.vanniktech.maven.publish.KotlinMultiplatform
+import com.vanniktech.maven.publish.MavenPublishBaseExtension
+import org.jetbrains.kotlin.gradle.dsl.JsModuleKind
 
 plugins {
   kotlin("multiplatform")
-  id("ru.vyarus.animalsniffer")
+  id("org.jetbrains.dokka")
+  id("com.vanniktech.maven.publish.base")
+  id("binary-compatibility-validator")
+  id("build-support")
 }
 
 kotlin {
   jvm {
-    withJava()
   }
   if (kmpJsEnabled) {
     js {
-      compilations.all {
-        kotlinOptions {
-          moduleKind = "umd"
-          sourceMap = true
-          metaInfo = true
-        }
+      compilerOptions {
+        moduleKind = JsModuleKind.MODULE_UMD
+        sourceMap = true
       }
       nodejs {
         testTask {
@@ -25,34 +27,56 @@ kotlin {
           }
         }
       }
+      browser {
+      }
     }
   }
   if (kmpNativeEnabled) {
-    iosX64()
-    iosArm64()
-    watchosArm32()
-    watchosArm64()
-    watchosX86()
-    // Required to generate tests tasks: https://youtrack.jetbrains.com/issue/KT-26547
-    linuxX64()
-    macosX64()
-    mingwX64()
+    configureOrCreateNativePlatforms()
   }
   sourceSets {
-    commonMain {
-      dependencies {
-        api(deps.kotlin.stdLib.common)
-        api(deps.kotlin.time)
-        api(project(":okio"))
+    all {
+      languageSettings.apply {
+        optIn("kotlin.time.ExperimentalTime")
       }
+    }
+    val commonMain by getting {
+      dependencies {
+        api(libs.kotlin.time)
+        api(projects.okio)
+      }
+    }
+    val commonTest by getting
+    if (kmpWasmEnabled) {
+      // Add support for wasmWasi when https://github.com/Kotlin/kotlinx-datetime/issues/324 is resolved.
+      configureOrCreateWasmPlatform(wasi = false)
+      createSourceSet("wasmMain", parent = commonMain, children = listOf("wasmJs"))
+      createSourceSet("wasmTest", parent = commonTest, children = listOf("wasmJs"))
+    }
+
+    val nonJvmMain by creating {
+      dependsOn(commonMain)
+    }
+    if (kmpJsEnabled) {
+      getByName("jsMain").dependsOn(nonJvmMain)
+    }
+    if (kmpNativeEnabled) {
+      for (childTarget in nativeTargets) {
+        get("${childTarget}Main").dependsOn(nonJvmMain)
+      }
+    }
+    if (kmpWasmEnabled) {
+      getByName("wasmMain").dependsOn(nonJvmMain)
     }
   }
 }
 
 tasks {
   val jvmJar by getting(Jar::class) {
-    val bndConvention = aQute.bnd.gradle.BundleTaskConvention(this)
-    bndConvention.setBnd(
+    // BundleTaskConvention() crashes unless there's a 'main' source set.
+    sourceSets.create(SourceSet.MAIN_SOURCE_SET_NAME)
+    val bndExtension = aQute.bnd.gradle.BundleTaskExtension(this)
+    bndExtension.setBnd(
       """
       Export-Package: okio.fakefilesystem
       Automatic-Module-Name: okio.fakefilesystem
@@ -61,21 +85,14 @@ tasks {
     )
     // Call the convention when the task has finished to modify the jar to contain OSGi metadata.
     doLast {
-      bndConvention.buildBundle()
+      bndExtension.buildAction()
+        .execute(this)
     }
   }
 }
 
-configure<AnimalSnifferExtension> {
-  sourceSets = listOf(project.sourceSets.getByName("main"))
+configure<MavenPublishBaseExtension> {
+  configure(
+    KotlinMultiplatform(javadocJar = JavadocJar.Empty())
+  )
 }
-
-val signature by configurations.getting {
-}
-
-dependencies {
-  signature(deps.animalSniffer.androidSignature)
-  signature(deps.animalSniffer.javaSignature)
-}
-
-apply(from = "$rootDir/gradle/gradle-mvn-mpp-push.gradle")

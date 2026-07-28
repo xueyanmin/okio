@@ -13,9 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+@file:JvmName("-FileSystem") // A leading '-' hides this class from Java.
+
 package okio.internal
 
-import okio.ExperimentalFileSystem
+import kotlin.jvm.JvmName
 import okio.FileMetadata
 import okio.FileNotFoundException
 import okio.FileSystem
@@ -29,21 +31,18 @@ import okio.use
  *
  * @throws IOException if [path] does not exist or its metadata cannot be read.
  */
-@ExperimentalFileSystem
 @Throws(IOException::class)
 internal fun FileSystem.commonMetadata(path: Path): FileMetadata {
   return metadataOrNull(path) ?: throw FileNotFoundException("no such file: $path")
 }
 
-@ExperimentalFileSystem
 @Throws(IOException::class)
 internal fun FileSystem.commonExists(path: Path): Boolean {
   return metadataOrNull(path) != null
 }
 
-@ExperimentalFileSystem
 @Throws(IOException::class)
-internal fun FileSystem.commonCreateDirectories(dir: Path) {
+internal fun FileSystem.commonCreateDirectories(dir: Path, mustCreate: Boolean) {
   // Compute the sequence of directories to create.
   val directories = ArrayDeque<Path>()
   var path: Path? = dir
@@ -52,13 +51,15 @@ internal fun FileSystem.commonCreateDirectories(dir: Path) {
     path = path.parent
   }
 
+  if (mustCreate && directories.isEmpty()) throw IOException("$dir already exists.")
+
   // Create them.
   for (toCreate in directories) {
+    // We know we are creating new directories by now so we don't have to pass down `mustCreate`.
     createDirectory(toCreate)
   }
 }
 
-@ExperimentalFileSystem
 @Throws(IOException::class)
 internal fun FileSystem.commonCopy(source: Path, target: Path) {
   source(source).use { bytesIn ->
@@ -68,23 +69,86 @@ internal fun FileSystem.commonCopy(source: Path, target: Path) {
   }
 }
 
-@ExperimentalFileSystem
 @Throws(IOException::class)
-internal fun FileSystem.commonDeleteRecursively(fileOrDirectory: Path) {
-  val stack = ArrayDeque<Path>()
-  stack += fileOrDirectory
+internal fun FileSystem.commonDeleteRecursively(fileOrDirectory: Path, mustExist: Boolean) {
+  val sequence = sequence {
+    collectRecursively(
+      fileSystem = this@commonDeleteRecursively,
+      stack = ArrayDeque(),
+      path = fileOrDirectory,
+      followSymlinks = false,
+      postorder = true,
+    )
+  }
+  val iterator = sequence.iterator()
+  while (iterator.hasNext()) {
+    val toDelete = iterator.next()
+    delete(toDelete, mustExist = mustExist && !iterator.hasNext())
+  }
+}
 
-  while (stack.isNotEmpty()) {
-    val toDelete = stack.removeLast()
-
-    val metadata = metadata(toDelete)
-    val children = if (metadata.isDirectory) list(toDelete) else listOf()
-
-    if (children.isNotEmpty()) {
-      stack += toDelete
-      stack += children
-    } else {
-      delete(toDelete)
+@Throws(IOException::class)
+internal fun FileSystem.commonListRecursively(dir: Path, followSymlinks: Boolean): Sequence<Path> {
+  return sequence {
+    val stack = ArrayDeque<Path>()
+    stack.addLast(dir)
+    for (child in list(dir)) {
+      collectRecursively(
+        fileSystem = this@commonListRecursively,
+        stack = stack,
+        path = child,
+        followSymlinks = followSymlinks,
+        postorder = false,
+      )
     }
   }
+}
+
+internal suspend fun SequenceScope<Path>.collectRecursively(
+  fileSystem: FileSystem,
+  stack: ArrayDeque<Path>,
+  path: Path,
+  followSymlinks: Boolean,
+  postorder: Boolean,
+) {
+  // For listRecursively, visit enclosing directory first.
+  if (!postorder) {
+    yield(path)
+  }
+
+  val children = fileSystem.listOrNull(path) ?: listOf()
+  if (children.isNotEmpty()) {
+    // Figure out if path is a symlink and detect symlink cycles.
+    var symlinkPath = path
+    var symlinkCount = 0
+    while (true) {
+      if (followSymlinks && symlinkPath in stack) throw IOException("symlink cycle at $path")
+      symlinkPath = fileSystem.symlinkTarget(symlinkPath) ?: break
+      symlinkCount++
+    }
+
+    // Recursively visit children.
+    if (followSymlinks || symlinkCount == 0) {
+      stack.addLast(symlinkPath)
+      try {
+        for (child in children) {
+          collectRecursively(fileSystem, stack, child, followSymlinks, postorder)
+        }
+      } finally {
+        stack.removeLast()
+      }
+    }
+  }
+
+  // For deleteRecursively, visit enclosing directory last.
+  if (postorder) {
+    yield(path)
+  }
+}
+
+/** Returns a resolved path to the symlink target, resolving it if necessary. */
+@Throws(IOException::class)
+internal fun FileSystem.symlinkTarget(path: Path): Path? {
+  val target = metadata(path).symlinkTarget ?: return null
+  return path.parent!!.div(target)
 }

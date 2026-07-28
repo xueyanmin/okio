@@ -15,9 +15,11 @@
  */
 package okio
 
-import org.assertj.core.api.Assertions.assertThat
-import org.junit.Test
+import assertk.assertThat
+import assertk.assertions.isEqualTo
+import assertk.assertions.isNotEqualTo
 import java.util.concurrent.TimeUnit
+import org.junit.Test
 
 class ForwardingTimeoutKotlinTest {
   @Test fun getAndSetDelegate() {

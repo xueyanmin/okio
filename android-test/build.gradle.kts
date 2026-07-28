@@ -1,6 +1,7 @@
+import com.android.build.gradle.internal.lint.AndroidLintAnalysisTask
+
 plugins {
   id("com.android.library")
-  id("org.jetbrains.kotlin.android")
 }
 
 buildscript {
@@ -16,23 +17,19 @@ val isIDE = properties.containsKey("android.injected.invoked.from.ide") ||
   System.getenv("IDEA_INITIAL_DIRECTORY") != null
 
 android {
+  namespace = "com.squareup.okio"
+
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_1_8
     targetCompatibility = JavaVersion.VERSION_1_8
     isCoreLibraryDesugaringEnabled = true
   }
 
-  kotlinOptions {
-    freeCompilerArgs += "-Xmulti-platform"
-  }
-
-  compileSdkVersion(30)
+  compileSdk = 33
 
   defaultConfig {
-    minSdkVersion(15)
-    targetSdkVersion(30)
-    versionCode = 1
-    versionName = "1.0"
+    minSdk = 15
+
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
     // AndroidJUnitRunner wasn't finding tests in multidex artifacts when running on Android 4.0.3.
@@ -41,6 +38,11 @@ android {
     multiDexEnabled = true
     multiDexKeepProguard = file("multidex-config.pro")
   }
+
+  testOptions {
+    targetSdk = 33
+  }
+
 
   if (!isIDE) {
     sourceSets {
@@ -60,16 +62,23 @@ android {
   }
 }
 
+kotlin {
+  compilerOptions {
+    freeCompilerArgs.add("-Xmulti-platform")
+  }
+}
+
+// https://issuetracker.google.com/issues/325146674
+tasks.withType<AndroidLintAnalysisTask> {
+  onlyIf { false }
+}
+
 dependencies {
-  coreLibraryDesugaring(deps.android.desugarJdkLibs)
-  androidTestImplementation(deps.androidx.testExtJunit)
-  androidTestImplementation(deps.androidx.testRunner)
-  androidTestImplementation(deps.animalSniffer.annotations)
-  androidTestImplementation(deps.kotlin.stdLib.common)
-  androidTestImplementation(deps.kotlin.test.annotations)
-  androidTestImplementation(deps.kotlin.test.common)
-  androidTestImplementation(deps.kotlin.test.jdk)
-  androidTestImplementation(deps.kotlin.time)
-  androidTestImplementation(deps.test.assertj)
-  androidTestImplementation(deps.test.junit)
+  coreLibraryDesugaring(libs.android.desugar.jdk.libs)
+  androidTestImplementation(libs.androidx.test.ext.junit)
+  androidTestImplementation(libs.androidx.test.runner)
+  androidTestImplementation(libs.kotlin.test)
+  androidTestImplementation(libs.kotlin.time)
+  androidTestImplementation(libs.test.assertk)
+  androidTestImplementation(libs.test.junit)
 }

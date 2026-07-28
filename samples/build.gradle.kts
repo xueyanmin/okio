@@ -1,27 +1,33 @@
 plugins {
   kotlin("multiplatform")
-  application
-}
-
-application {
-  mainClass.set(System.getProperty("mainClass"))
+  id("com.gradleup.tapmoc")
 }
 
 kotlin {
   jvm {
-    withJava()
+    binaries {
+      executable {
+        mainClass.set(System.getProperty("mainClass"))
+      }
+    }
   }
   sourceSets {
     commonMain {
       dependencies {
-        implementation(project(":okio"))
+        implementation(projects.okio)
       }
     }
     val jvmTest by getting {
       dependencies {
-        implementation(deps.test.junit)
-        implementation(deps.test.assertj)
+        implementation(libs.test.assertk)
+        implementation(libs.test.junit)
       }
     }
   }
+}
+
+tapmoc {
+  java(8)
+  kotlin(project.getVersionByName("kotlinCoreLibrariesVersion"))
+  checkDependencies()
 }

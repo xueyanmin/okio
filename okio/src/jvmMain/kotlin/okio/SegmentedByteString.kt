@@ -15,6 +15,15 @@
  */
 package okio
 
+import java.io.IOException
+import java.io.OutputStream
+import java.nio.ByteBuffer
+import java.nio.charset.Charset
+import java.security.InvalidKeyException
+import java.security.MessageDigest
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
+import okio.internal.commonCopyInto
 import okio.internal.commonEquals
 import okio.internal.commonGetSize
 import okio.internal.commonHashCode
@@ -24,23 +33,15 @@ import okio.internal.commonSubstring
 import okio.internal.commonToByteArray
 import okio.internal.commonWrite
 import okio.internal.forEachSegment
-import java.io.IOException
-import java.io.OutputStream
-import java.nio.ByteBuffer
-import java.nio.charset.Charset
-import java.security.InvalidKeyException
-import java.security.MessageDigest
-import javax.crypto.Mac
-import javax.crypto.spec.SecretKeySpec
 
 internal actual class SegmentedByteString internal actual constructor(
   @Transient internal actual val segments: Array<ByteArray>,
-  @Transient internal actual val directory: IntArray
+  @Transient internal actual val directory: IntArray,
 ) : ByteString(EMPTY.data) {
 
   override fun string(charset: Charset) = toByteString().string(charset)
 
-  override fun base64() = toByteString().base64()
+  override fun base64(includePadding: Boolean) = toByteString().base64(includePadding = includePadding)
 
   override fun hex() = toByteString().hex()
 
@@ -71,7 +72,7 @@ internal actual class SegmentedByteString internal actual constructor(
     }
   }
 
-  override fun base64Url() = toByteString().base64Url()
+  override fun base64Url(includePadding: Boolean) = toByteString().base64Url(includePadding = includePadding)
 
   override fun substring(beginIndex: Int, endIndex: Int): ByteString =
     commonSubstring(beginIndex, endIndex)
@@ -98,21 +99,28 @@ internal actual class SegmentedByteString internal actual constructor(
     offset: Int,
     other: ByteString,
     otherOffset: Int,
-    byteCount: Int
+    byteCount: Int,
   ): Boolean = commonRangeEquals(offset, other, otherOffset, byteCount)
 
   override fun rangeEquals(
     offset: Int,
     other: ByteArray,
     otherOffset: Int,
-    byteCount: Int
+    byteCount: Int,
   ): Boolean = commonRangeEquals(offset, other, otherOffset, byteCount)
+
+  override fun copyInto(
+    offset: Int,
+    target: ByteArray,
+    targetOffset: Int,
+    byteCount: Int,
+  ) = commonCopyInto(offset, target, targetOffset, byteCount)
 
   override fun indexOf(other: ByteArray, fromIndex: Int) = toByteString().indexOf(other, fromIndex)
 
   override fun lastIndexOf(other: ByteArray, fromIndex: Int) = toByteString().lastIndexOf(
     other,
-    fromIndex
+    fromIndex,
   )
 
   /** Returns a copy as a non-segmented byte string.  */

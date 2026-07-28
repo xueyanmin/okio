@@ -13,44 +13,23 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-@file:JvmName("-DeflaterSinkExtensions")
 @file:Suppress("NOTHING_TO_INLINE") // Aliases to public API.
 
 package okio
 
-import org.codehaus.mojo.animal_sniffer.IgnoreJRERequirement
-import java.io.IOException
 import java.util.zip.Deflater
+import okio.internal.EMPTY_BYTE_ARRAY
 
-/**
- * A sink that uses [DEFLATE](http://tools.ietf.org/html/rfc1951) to
- * compress data written to another source.
- *
- * ### Sync flush
- *
- * Aggressive flushing of this stream may result in reduced compression. Each
- * call to [flush] immediately compresses all currently-buffered data;
- * this early compression may be less effective than compression performed
- * without flushing.
- *
- * This is equivalent to using [Deflater] with the sync flush option.
- * This class does not offer any partial flush mechanism. For best performance,
- * only call [flush] when application behavior requires it.
- */
-class DeflaterSink
-/**
- * This internal constructor shares a buffer with its trusted caller.
- * In general we can't share a BufferedSource because the deflater holds input
- * bytes until they are inflated.
- */
-internal constructor(private val sink: BufferedSink, private val deflater: Deflater) : Sink {
-  constructor(sink: Sink, deflater: Deflater) : this(sink.buffer(), deflater)
+actual class DeflaterSink internal actual constructor(
+  private val sink: BufferedSink,
+  private val deflater: Deflater,
+) : Sink {
+  actual constructor(sink: Sink, deflater: Deflater) : this(sink.buffer(), deflater)
 
   private var closed = false
 
   @Throws(IOException::class)
-  override fun write(source: Buffer, byteCount: Long) {
+  actual override fun write(source: Buffer, byteCount: Long) {
     checkOffsetAndCount(source.size, 0, byteCount)
 
     var remaining = byteCount
@@ -73,9 +52,12 @@ internal constructor(private val sink: BufferedSink, private val deflater: Defla
 
       remaining -= toDeflate
     }
+
+    // Deflater still holds a reference to the most recent segment's byte array. That can cause
+    // problems in JNI, so clear it now. https://github.com/lysine-dev/okio/issues/1608
+    deflater.setInput(EMPTY_BYTE_ARRAY, 0, 0)
   }
 
-  @IgnoreJRERequirement
   private fun deflate(syncFlush: Boolean) {
     val buffer = sink.buffer
     while (true) {
@@ -85,10 +67,18 @@ internal constructor(private val sink: BufferedSink, private val deflater: Defla
       // Java 1.7, and is public (although with @hide) on Android since 2.3.
       // The @hide tag means that this code won't compile against the Android
       // 2.3 SDK, but it will run fine there.
-      val deflated = if (syncFlush) {
-        deflater.deflate(s.data, s.limit, Segment.SIZE - s.limit, Deflater.SYNC_FLUSH)
-      } else {
-        deflater.deflate(s.data, s.limit, Segment.SIZE - s.limit)
+      val deflated = try {
+        if (syncFlush) {
+          deflater.deflate(s.data, s.limit, Segment.SIZE - s.limit, Deflater.SYNC_FLUSH)
+        } else {
+          deflater.deflate(s.data, s.limit, Segment.SIZE - s.limit)
+        }
+      } catch (ise: IllegalStateException) {
+        // Java 25+ documented behavior.
+        throw IOException("Deflater already closed", ise)
+      } catch (npe: NullPointerException) {
+        // Java 24 and earlier undocumented behavior.
+        throw IOException("Deflater already closed", npe)
       }
 
       if (deflated > 0) {
@@ -107,18 +97,18 @@ internal constructor(private val sink: BufferedSink, private val deflater: Defla
   }
 
   @Throws(IOException::class)
-  override fun flush() {
+  actual override fun flush() {
     deflate(true)
     sink.flush()
   }
 
-  internal fun finishDeflate() {
+  internal actual fun finishDeflate() {
     deflater.finish()
     deflate(false)
   }
 
   @Throws(IOException::class)
-  override fun close() {
+  actual override fun close() {
     if (closed) return
 
     // Emit deflated data to the underlying sink. If this fails, we still need
@@ -147,15 +137,7 @@ internal constructor(private val sink: BufferedSink, private val deflater: Defla
     if (thrown != null) throw thrown
   }
 
-  override fun timeout(): Timeout = sink.timeout()
+  actual override fun timeout(): Timeout = sink.timeout()
 
   override fun toString() = "DeflaterSink($sink)"
 }
-
-/**
- * Returns an [DeflaterSink] that DEFLATE-compresses data to this [Sink] while writing.
- *
- * @see DeflaterSink
- */
-inline fun Sink.deflate(deflater: Deflater = Deflater()): DeflaterSink =
-  DeflaterSink(this, deflater)

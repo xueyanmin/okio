@@ -15,6 +15,9 @@
  */
 package okio
 
+import java.io.File
+import java.nio.file.Path as NioPath
+import java.nio.file.Paths
 import okio.internal.commonCompareTo
 import okio.internal.commonEquals
 import okio.internal.commonHashCode
@@ -23,20 +26,29 @@ import okio.internal.commonIsRelative
 import okio.internal.commonIsRoot
 import okio.internal.commonName
 import okio.internal.commonNameBytes
+import okio.internal.commonNormalized
 import okio.internal.commonParent
+import okio.internal.commonRelativeTo
 import okio.internal.commonResolve
+import okio.internal.commonRoot
+import okio.internal.commonSegments
+import okio.internal.commonSegmentsBytes
 import okio.internal.commonToPath
 import okio.internal.commonToString
 import okio.internal.commonVolumeLetter
-import org.codehaus.mojo.animal_sniffer.IgnoreJRERequirement
-import java.io.File
-import java.nio.file.Paths
-import java.nio.file.Path as NioPath
 
-@ExperimentalFileSystem
 actual class Path internal actual constructor(
-  internal actual val bytes: ByteString
+  internal actual val bytes: ByteString,
 ) : Comparable<Path> {
+  actual val root: Path?
+    get() = commonRoot()
+
+  actual val segments: List<String>
+    get() = commonSegments()
+
+  actual val segmentsBytes: List<ByteString>
+    get() = commonSegmentsBytes()
+
   actual val isAbsolute: Boolean
     get() = commonIsAbsolute()
 
@@ -63,14 +75,30 @@ actual class Path internal actual constructor(
     get() = commonIsRoot()
 
   @JvmName("resolve")
-  actual operator fun div(child: String): Path = commonResolve(child)
+  actual operator fun div(child: String): Path = commonResolve(child, normalize = false)
 
   @JvmName("resolve")
-  actual operator fun div(child: Path): Path = commonResolve(child)
+  actual operator fun div(child: ByteString): Path = commonResolve(child, normalize = false)
+
+  @JvmName("resolve")
+  actual operator fun div(child: Path): Path = commonResolve(child, normalize = false)
+
+  actual fun resolve(child: String, normalize: Boolean): Path =
+    commonResolve(child, normalize = normalize)
+
+  actual fun resolve(child: ByteString, normalize: Boolean): Path =
+    commonResolve(child, normalize = normalize)
+
+  actual fun resolve(child: Path, normalize: Boolean): Path =
+    commonResolve(child = child, normalize = normalize)
+
+  actual fun relativeTo(other: Path): Path = commonRelativeTo(other)
+
+  actual fun normalized(): Path = commonNormalized()
 
   fun toFile(): File = File(toString())
 
-  @IgnoreJRERequirement // Can only be invoked on platforms that have java.nio.file.
+  // Can only be invoked on platforms that have java.nio.file.
   fun toNioPath(): NioPath = Paths.get(toString())
 
   actual override fun compareTo(other: Path): Int = commonCompareTo(other)
@@ -82,21 +110,22 @@ actual class Path internal actual constructor(
   actual override fun toString() = commonToString()
 
   actual companion object {
-    /**
-     * Either `/` (on UNIX-like systems including Android, iOS, and Linux) or `\` (on Windows
-     * systems).
-     */
     @JvmField
     actual val DIRECTORY_SEPARATOR: String = File.separator
 
-    @JvmName("get") @JvmStatic
-    actual fun String.toPath(): Path = commonToPath()
+    @JvmName("get")
+    @JvmStatic
+    @JvmOverloads
+    actual fun String.toPath(normalize: Boolean): Path = commonToPath(normalize)
 
-    @JvmName("get") @JvmStatic
-    fun File.toOkioPath(): Path = toString().toPath()
+    @JvmName("get")
+    @JvmStatic
+    @JvmOverloads
+    fun File.toOkioPath(normalize: Boolean = false): Path = toString().toPath(normalize)
 
-    @JvmName("get") @JvmStatic
-    @IgnoreJRERequirement // Can only be invoked on platforms that have java.nio.file.
-    fun NioPath.toOkioPath(): Path = toString().toPath()
+    @JvmName("get")
+    @JvmStatic
+    @JvmOverloads
+    fun NioPath.toOkioPath(normalize: Boolean = false): Path = toString().toPath(normalize)
   }
 }

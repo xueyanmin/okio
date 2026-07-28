@@ -15,15 +15,76 @@
  */
 package okio
 
-import kotlinx.datetime.Clock
-import kotlin.time.ExperimentalTime
+import com.google.common.jimfs.Configuration
+import com.google.common.jimfs.Jimfs
+import java.io.InterruptedIOException
+import java.nio.file.FileSystems
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.fail
+import kotlin.time.Clock
+import okio.FileSystem.Companion.asOkioFileSystem
+import org.junit.Test
 
-@ExperimentalTime
-@ExperimentalFileSystem
-class JvmSystemFileSystemTest : AbstractFileSystemTest(
+/**
+ * This test will run using [NioSystemFileSystem] by default. If [java.nio.file.Files] is not found
+ * on the classpath, [JvmSystemFileSystem] will be use instead.
+ */
+class NioSystemFileSystemTest : AbstractFileSystemTest(
   clock = Clock.System,
   fileSystem = FileSystem.SYSTEM,
   windowsLimitations = Path.DIRECTORY_SEPARATOR == "\\",
   allowClobberingEmptyDirectories = Path.DIRECTORY_SEPARATOR == "\\",
-  temporaryDirectory = FileSystem.SYSTEM_TEMPORARY_DIRECTORY
+  allowAtomicMoveFromFileToDirectory = false,
+  temporaryDirectory = FileSystem.SYSTEM_TEMPORARY_DIRECTORY,
+  closeBehavior = CloseBehavior.DoesNothing,
+)
+
+class JvmSystemFileSystemTest : AbstractFileSystemTest(
+  clock = Clock.System,
+  fileSystem = JvmSystemFileSystem(),
+  windowsLimitations = Path.DIRECTORY_SEPARATOR == "\\",
+  allowClobberingEmptyDirectories = Path.DIRECTORY_SEPARATOR == "\\",
+  allowAtomicMoveFromFileToDirectory = false,
+  temporaryDirectory = FileSystem.SYSTEM_TEMPORARY_DIRECTORY,
+  closeBehavior = CloseBehavior.DoesNothing,
+) {
+
+  @Test fun checkInterruptedBeforeDeleting() {
+    Thread.currentThread().interrupt()
+    try {
+      fileSystem.delete(base)
+      fail()
+    } catch (expected: InterruptedIOException) {
+      assertEquals("interrupted", expected.message)
+      assertFalse(Thread.interrupted())
+    }
+  }
+}
+
+class NioJimFileSystemWrappingFileSystemTest : AbstractFileSystemTest(
+  clock = Clock.System,
+  fileSystem = Jimfs
+    .newFileSystem(
+      when (Path.DIRECTORY_SEPARATOR == "\\") {
+        true -> Configuration.windows()
+        false -> Configuration.unix()
+      },
+    ).asOkioFileSystem(),
+  windowsLimitations = false,
+  allowClobberingEmptyDirectories = true,
+  allowAtomicMoveFromFileToDirectory = true,
+  temporaryDirectory = FileSystem.SYSTEM_TEMPORARY_DIRECTORY,
+  closeBehavior = CloseBehavior.Closes,
+)
+
+class NioDefaultFileSystemWrappingFileSystemTest : AbstractFileSystemTest(
+  clock = Clock.System,
+  fileSystem = FileSystems.getDefault().asOkioFileSystem(),
+  windowsLimitations = false,
+  allowClobberingEmptyDirectories = Path.DIRECTORY_SEPARATOR == "\\",
+  allowAtomicMoveFromFileToDirectory = false,
+  allowRenameWhenTargetIsOpen = Path.DIRECTORY_SEPARATOR != "\\",
+  temporaryDirectory = FileSystem.SYSTEM_TEMPORARY_DIRECTORY,
+  closeBehavior = CloseBehavior.Unsupported,
 )

@@ -13,46 +13,114 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+@file:JvmName("-Path") // A leading '-' hides this class from Java.
+
 package okio.internal
 
+import kotlin.jvm.JvmName
 import okio.Buffer
 import okio.ByteString
 import okio.ByteString.Companion.encodeUtf8
-import okio.ExperimentalFileSystem
 import okio.Path
+import okio.Path.Companion.toPath
 
 private val SLASH = "/".encodeUtf8()
+
 private val BACKSLASH = "\\".encodeUtf8()
+
 private val ANY_SLASH = "/\\".encodeUtf8()
+
 private val DOT = ".".encodeUtf8()
+
 private val DOT_DOT = "..".encodeUtf8()
 
-@ExperimentalFileSystem
+@Suppress("NOTHING_TO_INLINE")
+internal inline fun Path.commonRoot(): Path? {
+  return when (val rootLength = rootLength()) {
+    -1 -> null
+    else -> Path(bytes.substring(0, rootLength))
+  }
+}
+
+@Suppress("NOTHING_TO_INLINE")
+internal inline fun Path.commonSegments(): List<String> {
+  return commonSegmentsBytes().map { it.utf8() }
+}
+
+/** This function skips the root then splits on slash. */
+@Suppress("NOTHING_TO_INLINE")
+internal inline fun Path.commonSegmentsBytes(): List<ByteString> {
+  val result = mutableListOf<ByteString>()
+  var segmentStart = rootLength()
+
+  // segmentStart should always follow a `\`, but for UNC paths it doesn't.
+  if (segmentStart == -1) {
+    segmentStart = 0
+  } else if (segmentStart < bytes.size && bytes[segmentStart] == '\\'.code.toByte()) {
+    segmentStart++
+  }
+
+  for (i in segmentStart until bytes.size) {
+    if (bytes[i] == '/'.code.toByte() || bytes[i] == '\\'.code.toByte()) {
+      result += bytes.substring(segmentStart, i)
+      segmentStart = i + 1
+    }
+  }
+
+  if (segmentStart < bytes.size) {
+    result += bytes.substring(segmentStart, bytes.size)
+  }
+
+  return result
+}
+
+/** Return the length of the prefix of this that is the root path, or -1 if it has no root. */
+private fun Path.rootLength(): Int {
+  if (bytes.size == 0) return -1
+  if (bytes[0] == '/'.code.toByte()) return 1
+
+  if (bytes[0] == '\\'.code.toByte()) {
+    if (bytes.size > 2 && bytes[1] == '\\'.code.toByte()) {
+      // Look for a root like `\\localhost`.
+      var uncRootEnd = bytes.indexOf(BACKSLASH, fromIndex = 2)
+      if (uncRootEnd == -1) uncRootEnd = bytes.size
+      return uncRootEnd
+    }
+
+    // We found a root like `\`.
+    return 1
+  }
+
+  // Look for a root like `C:\`.
+  if (bytes.size > 2 && bytes[1] == ':'.code.toByte() && bytes[2] == '\\'.code.toByte()) {
+    val c = bytes[0].toInt().toChar()
+    if (c !in 'a'..'z' && c !in 'A'..'Z') return -1
+    return 3
+  }
+
+  return -1
+}
+
 @Suppress("NOTHING_TO_INLINE")
 internal inline fun Path.commonIsAbsolute(): Boolean {
-  return bytes.startsWith(SLASH) ||
-    bytes.startsWith(BACKSLASH) ||
-    (volumeLetter != null && bytes.size > 2 && bytes[2] == '\\'.toByte())
+  return rootLength() != -1
 }
 
-@ExperimentalFileSystem
 @Suppress("NOTHING_TO_INLINE")
 internal inline fun Path.commonIsRelative(): Boolean {
-  return !isAbsolute
+  return rootLength() == -1
 }
 
-@ExperimentalFileSystem
 @Suppress("NOTHING_TO_INLINE")
 internal inline fun Path.commonVolumeLetter(): Char? {
   if (bytes.indexOf(SLASH) != -1) return null
   if (bytes.size < 2) return null
-  if (bytes[1] != ':'.toByte()) return null
-  val c = bytes[0].toChar()
+  if (bytes[1] != ':'.code.toByte()) return null
+  val c = bytes[0].toInt().toChar()
   if (c !in 'a'..'z' && c !in 'A'..'Z') return null
   return c
 }
 
-@ExperimentalFileSystem
 private val Path.indexOfLastSlash: Int
   get() {
     val lastSlash = bytes.lastIndexOf(SLASH)
@@ -60,7 +128,6 @@ private val Path.indexOfLastSlash: Int
     return bytes.lastIndexOf(BACKSLASH)
   }
 
-@ExperimentalFileSystem
 @Suppress("NOTHING_TO_INLINE")
 internal inline fun Path.commonNameBytes(): ByteString {
   val lastSlash = indexOfLastSlash
@@ -71,13 +138,11 @@ internal inline fun Path.commonNameBytes(): ByteString {
   }
 }
 
-@ExperimentalFileSystem
 @Suppress("NOTHING_TO_INLINE")
 internal inline fun Path.commonName(): String {
   return nameBytes.utf8()
 }
 
-@ExperimentalFileSystem
 @Suppress("NOTHING_TO_INLINE")
 internal inline fun Path.commonParent(): Path? {
   if (bytes == DOT || bytes == SLASH || bytes == BACKSLASH || lastSegmentIsDotDot()) {
@@ -109,7 +174,6 @@ internal inline fun Path.commonParent(): Path? {
   }
 }
 
-@ExperimentalFileSystem
 private fun Path.lastSegmentIsDotDot(): Boolean {
   if (bytes.endsWith(DOT_DOT)) {
     if (bytes.size == 2) return true // ".." is the whole string.
@@ -119,30 +183,30 @@ private fun Path.lastSegmentIsDotDot(): Boolean {
   return false
 }
 
-@ExperimentalFileSystem
 @Suppress("NOTHING_TO_INLINE")
 internal inline fun Path.commonIsRoot(): Boolean {
-  return parent == null && isAbsolute
+  return rootLength() == bytes.size
 }
 
-@ExperimentalFileSystem
 @Suppress("NOTHING_TO_INLINE")
-internal inline fun Path.commonResolve(child: String): Path {
-  return div(Buffer().writeUtf8(child).toPath())
+internal inline fun Path.commonResolve(child: String, normalize: Boolean): Path {
+  return commonResolve(Buffer().writeUtf8(child), normalize = normalize)
 }
 
-@ExperimentalFileSystem
 @Suppress("NOTHING_TO_INLINE")
-internal inline fun Path.commonResolve(child: Path): Path {
+internal inline fun Path.commonResolve(child: ByteString, normalize: Boolean): Path {
+  return commonResolve(Buffer().write(child), normalize = normalize)
+}
+
+@Suppress("NOTHING_TO_INLINE")
+internal inline fun Path.commonResolve(child: Buffer, normalize: Boolean): Path {
+  return commonResolve(child.toPath(normalize = false), normalize = normalize)
+}
+
+internal fun Path.commonResolve(child: Path, normalize: Boolean): Path {
   if (child.isAbsolute || child.volumeLetter != null) return child
 
-  val slash = when {
-    bytes.indexOf(SLASH) != -1 -> SLASH
-    bytes.indexOf(BACKSLASH) != -1 -> BACKSLASH
-    child.bytes.indexOf(SLASH) != -1 -> SLASH
-    child.bytes.indexOf(BACKSLASH) != -1 -> BACKSLASH
-    else -> Path.DIRECTORY_SEPARATOR.toSlash()
-  }
+  val slash = slash ?: child.slash ?: Path.DIRECTORY_SEPARATOR.toSlash()
 
   val buffer = Buffer()
   buffer.write(bytes)
@@ -150,41 +214,94 @@ internal inline fun Path.commonResolve(child: Path): Path {
     buffer.write(slash)
   }
   buffer.write(child.bytes)
-  return buffer.toPath()
+  return buffer.toPath(normalize = normalize)
 }
 
-@ExperimentalFileSystem
+@Suppress("NOTHING_TO_INLINE")
+internal inline fun Path.commonRelativeTo(other: Path): Path {
+  require(root == other.root) {
+    "Paths of different roots cannot be relative to each other: $this and $other"
+  }
+
+  val thisSegments = this.segmentsBytes
+  val otherSegments = other.segmentsBytes
+
+  // We look at the path both have in common.
+  var firstNewSegmentIndex = 0
+  val minSegmentsSize = minOf(thisSegments.size, otherSegments.size)
+  while (firstNewSegmentIndex < minSegmentsSize &&
+    thisSegments[firstNewSegmentIndex] == otherSegments[firstNewSegmentIndex]
+  ) {
+    firstNewSegmentIndex++
+  }
+
+  if (firstNewSegmentIndex == minSegmentsSize && bytes.size == other.bytes.size) {
+    // `this` and `other` are the same path.
+    return ".".toPath()
+  }
+
+  require(otherSegments.subList(firstNewSegmentIndex, otherSegments.size).indexOf(DOT_DOT) == -1) {
+    "Impossible relative path to resolve: $this and $other"
+  }
+
+  if (other.bytes == DOT) {
+    // Anything relative to "." is itself!
+    return this
+  }
+
+  val buffer = Buffer()
+  val slash = other.slash ?: slash ?: Path.DIRECTORY_SEPARATOR.toSlash()
+  for (i in firstNewSegmentIndex until otherSegments.size) {
+    buffer.write(DOT_DOT)
+    buffer.write(slash)
+  }
+  for (i in firstNewSegmentIndex until thisSegments.size) {
+    buffer.write(thisSegments[i])
+    buffer.write(slash)
+  }
+  return buffer.toPath(normalize = false)
+}
+
+@Suppress("NOTHING_TO_INLINE")
+internal inline fun Path.commonNormalized(): Path {
+  return toString().toPath(normalize = true)
+}
+
+private val Path.slash: ByteString?
+  get() {
+    return when {
+      bytes.indexOf(SLASH) != -1 -> SLASH
+      bytes.indexOf(BACKSLASH) != -1 -> BACKSLASH
+      else -> null
+    }
+  }
+
 @Suppress("NOTHING_TO_INLINE")
 internal inline fun Path.commonCompareTo(other: Path): Int {
   return bytes.compareTo(other.bytes)
 }
 
-@ExperimentalFileSystem
 @Suppress("NOTHING_TO_INLINE")
 internal inline fun Path.commonEquals(other: Any?): Boolean {
   return other is Path && other.bytes == bytes
 }
 
-@ExperimentalFileSystem
 @Suppress("NOTHING_TO_INLINE")
 internal inline fun Path.commonHashCode(): Int {
   return bytes.hashCode()
 }
 
-@ExperimentalFileSystem
 @Suppress("NOTHING_TO_INLINE")
 internal inline fun Path.commonToString(): String {
   return bytes.utf8()
 }
 
-@ExperimentalFileSystem
-fun String.commonToPath(): Path {
-  return Buffer().writeUtf8(this).toPath()
+internal fun String.commonToPath(normalize: Boolean): Path {
+  return Buffer().writeUtf8(this).toPath(normalize)
 }
 
 /** Consume the buffer and return it as a path. */
-@ExperimentalFileSystem
-internal fun Buffer.toPath(): Path {
+internal fun Buffer.toPath(normalize: Boolean): Path {
   var slash: ByteString? = null
   val result = Buffer()
 
@@ -196,13 +313,14 @@ internal fun Buffer.toPath(): Path {
     slash = slash ?: byte.toSlash()
     leadingSlashCount++
   }
-  if (leadingSlashCount >= 2 && slash == BACKSLASH) {
+  val windowsUncPath = leadingSlashCount >= 2 && slash == BACKSLASH
+  if (windowsUncPath) {
     // This is a Windows UNC path, like \\server\directory\file.txt.
-    result.write(slash)
+    result.write(slash!!)
     result.write(slash)
   } else if (leadingSlashCount > 0) {
     // This is platform-dependent:
-    //  * On UNIX: a absolute path like /home
+    //  * On UNIX: an absolute path like /home
     //  * On Windows: this is relative to the current volume, like \Windows.
     result.write(slash!!)
   } else {
@@ -236,8 +354,12 @@ internal fun Buffer.toPath(): Path {
     }
 
     if (part == DOT_DOT) {
-      if (!absolute && (canonicalParts.isEmpty() || canonicalParts.last() == DOT_DOT)) {
+      if (absolute && canonicalParts.isEmpty()) {
+        // Silently consume `..`.
+      } else if (!normalize || !absolute && (canonicalParts.isEmpty() || canonicalParts.last() == DOT_DOT)) {
         canonicalParts.add(part) // '..' doesn't pop '..' for relative paths.
+      } else if (windowsUncPath && canonicalParts.size == 1) {
+        // `..` doesn't pop UNC hostnames.
       } else {
         canonicalParts.removeLastOrNull()
       }
@@ -267,8 +389,8 @@ private fun String.toSlash(): ByteString {
 
 private fun Byte.toSlash(): ByteString {
   return when (toInt()) {
-    '/'.toInt() -> SLASH
-    '\\'.toInt() -> BACKSLASH
+    '/'.code -> SLASH
+    '\\'.code -> BACKSLASH
     else -> throw IllegalArgumentException("not a directory separator: $this")
   }
 }
@@ -276,7 +398,7 @@ private fun Byte.toSlash(): ByteString {
 private fun Buffer.startsWithVolumeLetterAndColon(slash: ByteString): Boolean {
   if (slash != BACKSLASH) return false
   if (size < 2) return false
-  if (get(1) != ':'.toByte()) return false
-  val b = get(0).toChar()
+  if (get(1) != ':'.code.toByte()) return false
+  val b = get(0).toInt().toChar()
   return b in 'a'..'z' || b in 'A'..'Z'
 }
